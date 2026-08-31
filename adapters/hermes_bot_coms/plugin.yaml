@@ -1,0 +1,14 @@
+name: bot-coms
+version: 0.1.0
+description: "Filesystem-spool bot-to-bot messaging (send/claim/ack/nack/status). Independent of A2A and BUS."
+kind: standalone
+provides_tools:
+  - bot_coms_send
+  - bot_coms_claim
+  - bot_coms_ack
+  - bot_coms_nack
+  - bot_coms_status
+optional_env:
+  - BOT_COMS_SPOOL_ROOT
+  - BOT_COMS_PEER_ID
+  - BOT_COMS_TOKEN
