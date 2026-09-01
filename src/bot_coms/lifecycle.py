@@ -188,7 +188,11 @@ def ack(
     delete_lease(paths, claimed.envelope.id)
     if store is not None:
         store.complete(paths.peer_id, claimed.envelope.idempotency_key, result, clock)
-    if result is not None:
+    # A response is a terminal delivery receipt.  In particular, a worker
+    # must be able to acknowledge a response even if its generic handler
+    # returns a status payload; emitting that payload as another response
+    # would create an acknowledgement loop.
+    if result is not None and claimed.envelope.type != "response":
         write_result(paths, claimed.envelope, result, config=config, clock=clock)
     audit(paths, clock, "acked", file_mode=config.file_mode, msg_id=claimed.envelope.id)
 
@@ -217,6 +221,9 @@ def write_result(
         expires_at=format_ts(now + timedelta(seconds=config.default_ttl_s)),
         attempt=0,
         reply_to=None,
+        # Preserve transport/application routing metadata (for example the
+        # originating Discord channel or thread) across the result handoff.
+        headers=dict(original.headers) if original.headers else None,
     )
     dest = require_peer(claimer.root, reply_peer)
     enqueue_inbox(dest, response, config=config, clock=clock)
