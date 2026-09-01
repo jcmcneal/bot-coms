@@ -5,8 +5,8 @@ from pathlib import Path
 
 def test_no_forbidden_imports() -> None:
     roots = [
-        Path("src"),
-        Path("adapters"),
+        Path("src/bot_coms"),
+        Path("adapters/hermes_bot_coms"),
     ]
     needles = ("BUS.md", "plugins/platforms/a2a", "open-genome")
     hits: list[str] = []

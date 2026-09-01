@@ -1,0 +1,169 @@
+"""Hermes tools for bot-coms board (team coordination lane)."""
+
+from __future__ import annotations
+
+import json
+import os
+from pathlib import Path
+from typing import Any
+
+from bot_coms_board.coordinator import TeamCoordinator, default_spool_root
+from bot_coms_board.tool import TEAM_BUS_SCHEMA, handle_team_bus
+
+
+def _args(args: dict[str, Any] | None, kwargs: dict[str, Any]) -> dict[str, Any]:
+    if args:
+        return args
+    return {k: v for k, v in kwargs.items() if k != "ctx"}
+
+
+def _json_result(data: dict[str, Any]) -> str:
+    return json.dumps(data, ensure_ascii=False)
+
+
+def team_bus(args: dict | None = None, **kwargs) -> str:
+    a = _args(args, kwargs)
+    return handle_team_bus(a)
+
+
+TEAM_ASSIGN_SCHEMA = {
+    "name": "team_assign",
+    "description": (
+        "PM assign: register slice in bus.sqlite and send lean bot-coms ping "
+        "(fire-and-forget). Does not wait for ACK — poll team_bus slice for "
+        "RUNNING + active_job."
+    ),
+    "parameters": {
+        "type": "object",
+        "properties": {
+            "slice": {"type": "string"},
+            "to_peer": {"type": "string", "description": "swe, verifier, dna-researcher"},
+            "title": {"type": "string"},
+            "assignment_path": {"type": "string"},
+            "to_profile": {"type": "string"},
+            "from_profile": {"type": "string"},
+            "tags": {"type": "array", "items": {"type": "string"}},
+            "intent": {"type": "string", "enum": ["assign", "report_only"]},
+        },
+        "required": ["slice", "to_peer", "title", "assignment_path"],
+    },
+}
+
+
+def team_assign(args: dict | None = None, **kwargs) -> str:
+    a = _args(args, kwargs)
+    coord = TeamCoordinator()
+    try:
+        result = coord.assign(
+            slice_id=a["slice"],
+            to_peer=a["to_peer"],
+            title=a["title"],
+            assignment_path=a["assignment_path"],
+            from_profile=a.get("from_profile") or "project-manager",
+            to_profile=a.get("to_profile"),
+            tags=a.get("tags"),
+            intent=a.get("intent") or "assign",
+        )
+    except Exception as exc:
+        return _json_result({"success": False, "error": str(exc)})
+    return _json_result(
+        {
+            "success": True,
+            "slice": result.slice_id,
+            "row": result.row,
+            "outbound_id": result.outbound_id,
+            "correlation_id": result.correlation_id,
+        }
+    )
+
+
+TEAM_INBOX_SCHEMA = {
+    "name": "team_inbox",
+    "description": (
+        "Process bot-coms inbox for this peer: claim, validate payload, join SQL, "
+        "verify digest, auto-handle report_only/cancel/fail. Returns dispatch "
+        "decisions (assign → launch_cursor bundle). Assign stays claimed until "
+        "bot_coms_ack after cursor_screen + team_bus status."
+    ),
+    "parameters": {
+        "type": "object",
+        "properties": {
+            "limit": {"type": "integer"},
+            "spool_root": {"type": "string"},
+        },
+    },
+}
+
+
+def team_inbox(args: dict | None = None, **kwargs) -> str:
+    a = _args(args, kwargs)
+    peer = os.environ.get("BOT_COMS_PEER_ID")
+    if not peer:
+        return _json_result({"success": False, "error": "BOT_COMS_PEER_ID required"})
+    spool_raw = a.get("spool_root")
+    spool = Path(spool_raw).expanduser() if isinstance(spool_raw, str) and spool_raw else default_spool_root()
+    coord = TeamCoordinator(spool_root=spool)
+    result = coord.process_inbox(
+        peer,
+        limit=int(a.get("limit") or 10),
+        auto_handle=False,
+        auto_handle_intents=frozenset({"report_only", "report", "cancel"}),
+    )
+    return _json_result(
+        {
+            "success": True,
+            "peer": result.peer,
+            "reclaimed": result.reclaimed,
+            "decisions": [
+                {
+                    "message_id": d.message_id,
+                    "slice": d.slice_id,
+                    "intent": d.intent,
+                    "disposition": d.disposition,
+                    "handled": d.handled,
+                    "assignment_path": d.assignment_path,
+                    "assignment_body": d.assignment_body,
+                    "slice_row": d.slice_row,
+                    "ack_result": d.ack_result,
+                    "error": d.error,
+                    "error_code": d.error_code,
+                }
+                for d in result.decisions
+            ],
+        }
+    )
+
+
+TEAM_REPORT_SCHEMA = {
+    "name": "team_report",
+    "description": (
+        "Stamp verdict in bus.sqlite and emit lean {intent:report} doorbell to pm."
+    ),
+    "parameters": {
+        "type": "object",
+        "properties": {
+            "slice": {"type": "string"},
+            "verdict": {"type": "string"},
+            "evidence": {"type": "string"},
+        },
+        "required": ["slice"],
+    },
+}
+
+
+def team_report(args: dict | None = None, **kwargs) -> str:
+    a = _args(args, kwargs)
+    peer = os.environ.get("BOT_COMS_PEER_ID")
+    if not peer:
+        return _json_result({"success": False, "error": "BOT_COMS_PEER_ID required"})
+    coord = TeamCoordinator()
+    try:
+        out = coord.report(
+            slice_id=a["slice"],
+            verdict=a.get("verdict"),
+            evidence=a.get("evidence"),
+            from_peer=peer,
+        )
+    except Exception as exc:
+        return _json_result({"success": False, "error": str(exc)})
+    return _json_result({"success": True, **out})

@@ -1,9 +1,9 @@
 # Non-goals (MVP)
 
-bot-coms is a local POSIX filesystem-spool messenger. The following are **out of scope** for 0.1.0:
+`bot_coms` core is a local POSIX filesystem-spool messenger. The following are **out of scope** for the core package:
 
 - HTTP / WebSocket transport (sketch only: `HTTP_ADAPTER_SKETCH.md`)
-- BUS.md integration or reads/writes
+- BUS / slice ledger integration in the core import graph
 - Hermes A2A gateway reuse, repair, or patches
 - Multi-host clustering
 - Auth federation, mTLS, or message encryption beyond filesystem modes
@@ -13,4 +13,7 @@ bot-coms is a local POSIX filesystem-spool messenger. The following are **out of
 - Group-writable multi-user spools (single OS user owns the tree)
 - Cross-message transactions and global ordering
 
-Callers may optionally consult BUS for *their* coordination. bot-coms never takes a BUS dependency.
+**Sibling lane:** `bot_coms_board` (same repo, separate package) owns
+`bus.sqlite` coordination, high-level assign/inbox/report tools, and the
+Hermes `bot-coms-board` plugin. The core never imports `bot_coms_board`; an
+import-boundary test enforces this.

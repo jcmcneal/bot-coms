@@ -1,0 +1,9 @@
+name: bot-coms-board
+version: 0.1.0
+description: "Team coordination board (bus.sqlite) + high-level assign/inbox/report tools."
+kind: standalone
+provides_tools:
+  - team_bus
+  - team_assign
+  - team_inbox
+  - team_report

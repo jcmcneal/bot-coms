@@ -173,3 +173,15 @@ Best-effort FIFO by ULID within one peer inbox; higher `priority` first. Multipl
 | `delegate_and_ack(client, claimed, to, payload)` | Intermediate peer: forward with copied `headers`, wait for child, fold up via `ack` + `result` exactly once. |
 
 Hermes adapter mirrors this: `bot_coms_request` (sync) and `bot_coms_emit` (fire-and-forget) for callers; atomic `claim`/`ack`/`nack` tools for workers. See `adapters/hermes_bot_coms/README.md`.
+
+## Team coordination payloads (callers — not part of wire protocol)
+
+Team payloads and the slice ledger are documented in
+[`docs/BOARD.md`](BOARD.md) and implemented in the **`bot_coms_board`**
+sibling package (Hermes plugin `bot-coms-board`).
+
+- Spool payload keys: `schema_version`, `intent`, `slice` only.
+- Slice metadata lives in `~/.hermes/team/bus.sqlite` (`team_bus register`).
+- Prefer high-level tools: `team_assign`, `team_inbox`, `team_report`.
+
+The transport core does not validate team payloads; `bot_coms_board` does.

@@ -2,7 +2,9 @@
 
 Standalone bot-to-bot messaging over a **local POSIX filesystem spool**. Delivery is at-least-once; side effects are exactly-once when handlers consult the idempotency store (or are naturally idempotent).
 
-This project does **not** depend on BUS.md, the Hermes A2A gateway, or Open Genome. HTTP transport is post-MVP (see `docs/HTTP_ADAPTER_SKETCH.md`).
+This project does **not** depend on the Hermes A2A gateway or Open Genome. HTTP transport is post-MVP (see `docs/HTTP_ADAPTER_SKETCH.md`).
+
+**Team coordination** lives in the sibling package `bot_coms_board` (same repo): `bus.sqlite` ledger, `team_assign` / `team_inbox` / `team_report` Hermes tools, and `bot-coms-board` CLI. See `docs/BOARD.md`. The transport core never imports the board lane.
 
 MVP requires a **local POSIX** disk (APFS/ext4). NFS and other shared filesystems are unsupported.
 
