@@ -27,4 +27,16 @@ ln -s /Users/jason/projects/bot-coms/adapters/hermes_bot_coms ~/.hermes/plugins/
 | `BOT_COMS_PEER_ID` | yes |
 | `BOT_COMS_TOKEN` | no (allowlist) |
 
-Tools: `bot_coms_send`, `bot_coms_claim`, `bot_coms_ack`, `bot_coms_nack`, `bot_coms_status`.
+Tools: `bot_coms_send`, `bot_coms_claim`, `bot_coms_reclaim`, `bot_coms_ack`, `bot_coms_nack`, `bot_coms_status`.
+
+## Pulse integration
+
+Each pulse must call `bot_coms_reclaim` before deciding whether to start a
+worker. A reclaimed message is returned to `inbox`, so it is work even when
+there was no newly enqueued file. Treat a live Hermes process as healthy only
+when it is making progress; a stuck process must be replaced after its lease
+expires.
+
+Responses are terminal receipts. Acknowledge them without a result payload;
+the adapter also suppresses result-generated replies for response envelopes as
+a safety net, preventing receipt loops.

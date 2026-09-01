@@ -53,6 +53,13 @@ def bot_coms_claim(args: dict | None = None, **kwargs) -> str:
     return json.dumps({"claimed": True, "envelope": claimed.envelope.to_dict()})
 
 
+def bot_coms_reclaim(args: dict | None = None, **kwargs) -> str:
+    """Sweep stale processing leases without requiring inbox traffic."""
+    del args, kwargs
+    client = _client()
+    return json.dumps({"peer": client.peer_id, "reclaimed": client.reclaim_stale()})
+
+
 def _claimed_or_processing(client: Client, msg_id: str) -> ClaimedMessage:
     claimed = client.claim(msg_id=msg_id)
     if claimed is not None:
@@ -133,6 +140,12 @@ CLAIM_SCHEMA = {
         "type": "object",
         "properties": {"id": {"type": "string", "description": "Optional specific message id"}},
     },
+}
+
+RECLAIM_SCHEMA = {
+    "name": "bot_coms_reclaim",
+    "description": "Return this peer's stale processing messages to its inbox.",
+    "parameters": {"type": "object", "properties": {}},
 }
 
 ACK_SCHEMA = {

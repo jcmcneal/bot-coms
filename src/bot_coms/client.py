@@ -17,6 +17,7 @@ from bot_coms.lifecycle import nack as lc_nack
 from bot_coms.lifecycle import poll_result as lc_poll_result
 from bot_coms.lifecycle import release_to_inbox
 from bot_coms.lifecycle import status as lc_status
+from bot_coms.lease import reclaim_stale
 from bot_coms.paths import PeerPaths
 from bot_coms.permissions import assert_owner
 from bot_coms.retry import is_expired, is_visible
@@ -101,6 +102,14 @@ class Client:
             msg_id=msg_id,
             store=self._store,
         )
+
+    def reclaim_stale(self) -> list[str]:
+        """Return expired processing leases to this peer's inbox.
+
+        Call this from a scheduler/pulse even when the inbox is empty, so a
+        crashed worker is recoverable without waiting for fresh traffic.
+        """
+        return reclaim_stale(self.paths, self.clock, self.config)
 
     def ack(self, claimed: ClaimedMessage, *, result: dict[str, Any] | None = None) -> None:
         lc_ack(

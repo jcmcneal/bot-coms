@@ -108,7 +108,7 @@ Reclaim: if a `processing/` file has no lease or `now - heartbeat_at > lease_tim
 | Op | FS effect |
 |---|---|
 | `ack` | `processing → acked`; delete lease; idempotency `completed`; audit |
-| `ack` + result | as ack + `type=response` envelope (`correlation_id` preserved, `attempt=0`) into `reply_to` inbox (or original `from` if `reply_to` is null) **and** mirror `$claimer/results/<correlation_id>.json` and `$reply_to/results/<correlation_id>.json` |
+| `ack` + result | for `request` and `event`, as ack + `type=response` envelope (`correlation_id`, `headers` preserved, `attempt=0`) into `reply_to` inbox (or original `from` if `reply_to` is null) **and** mirror `$claimer/results/<correlation_id>.json` and `$reply_to/results/<correlation_id>.json`; for `response`, the result is ignored and the response is terminal |
 | `nack` | bump `attempt`; if `≥ max_attempts` → dead-letter `max_attempts`; else set `next_visible_at = now + backoff(attempt)` and `processing → inbox`; delete lease |
 | poison | dead-letter `poison` (non-retryable) |
 

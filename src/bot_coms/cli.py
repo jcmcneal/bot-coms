@@ -81,6 +81,13 @@ def cmd_claim(ns: argparse.Namespace) -> int:
     return 0
 
 
+def cmd_reclaim(ns: argparse.Namespace) -> int:
+    client = _client(ns, _peer(ns))
+    reclaimed = client.reclaim_stale()
+    _json_print({"peer": client.peer_id, "reclaimed": reclaimed})
+    return 0
+
+
 def cmd_ack(ns: argparse.Namespace) -> int:
     client = _client(ns, _peer(ns))
     claimed = client.claim(msg_id=ns.id)
@@ -197,6 +204,12 @@ def build_parser() -> argparse.ArgumentParser:
     claim.add_argument("--id", default=None)
     claim.add_argument("--token", default=None)
     claim.set_defaults(func=cmd_claim)
+
+    reclaim = sub.add_parser("reclaim")
+    reclaim.add_argument("--root", default=None)
+    reclaim.add_argument("--peer", default=None)
+    reclaim.add_argument("--token", default=None)
+    reclaim.set_defaults(func=cmd_reclaim)
 
     ack = sub.add_parser("ack")
     ack.add_argument("--root", default=None)
