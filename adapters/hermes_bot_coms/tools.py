@@ -9,8 +9,10 @@ from typing import Any
 
 from bot_coms import Client
 from bot_coms.atomic import read_json
+from bot_coms.call import CallDeadLetter, CallTimeout, map_call_error
 from bot_coms.envelope import envelope_from_dict
-from bot_coms.types import ClaimedMessage
+from bot_coms.headers import SOURCE_HEADER, format_source
+from bot_coms.types import ClaimedMessage, PermissionDenied
 
 
 def _client() -> Client:
@@ -28,6 +30,48 @@ def _args(args: dict[str, Any] | None, kwargs: dict[str, Any]) -> dict[str, Any]
     return {k: v for k, v in kwargs.items() if k != "ctx"}
 
 
+def _normalize_headers(raw: Any) -> dict[str, str] | None:
+    if raw is None:
+        return None
+    if isinstance(raw, str):
+        raw = json.loads(raw)
+    if not isinstance(raw, dict):
+        raise ValueError("headers must be a string map")
+    out: dict[str, str] = {}
+    for key, value in raw.items():
+        if not isinstance(key, str) or not isinstance(value, str):
+            raise ValueError("headers must be a string map")
+        out[key] = value
+    return out or None
+
+
+def _session_source() -> str:
+    """Auto-stamp from Hermes session context when running inside the gateway."""
+    try:
+        from gateway.session_context import get_session_env
+    except ImportError:
+        return ""
+    platform = (get_session_env("HERMES_SESSION_PLATFORM", "") or "").strip().lower()
+    if platform in {"", "cli", "tui", "local"}:
+        return ""
+    chat_id = (get_session_env("HERMES_SESSION_CHAT_ID", "") or "").strip()
+    if not chat_id:
+        return ""
+    thread_id = (get_session_env("HERMES_SESSION_THREAD_ID", "") or "").strip()
+    return format_source(platform, chat_id, thread_id)
+
+
+def _resolve_send_headers(a: dict[str, Any]) -> dict[str, str] | None:
+    headers = _normalize_headers(a.get("headers"))
+    source = (headers or {}).get(SOURCE_HEADER, "").strip() if headers else ""
+    if not source:
+        auto = _session_source()
+        if auto:
+            headers = dict(headers) if headers else {}
+            headers[SOURCE_HEADER] = auto
+    return headers
+
+
 def bot_coms_send(args: dict | None = None, **kwargs) -> str:
     a = _args(args, kwargs)
     payload = a.get("payload")
@@ -41,6 +85,7 @@ def bot_coms_send(args: dict | None = None, **kwargs) -> str:
         correlation_id=a.get("correlation_id"),
         reply_to=a.get("reply_to"),
         ttl_s=a.get("ttl_s"),
+        headers=_resolve_send_headers(a),
     )
     return json.dumps(env.to_dict())
 
@@ -115,6 +160,62 @@ def bot_coms_status(args: dict | None = None, **kwargs) -> str:
     return json.dumps({"peer": client.peer_id, "counts": counts})
 
 
+def _parse_payload(raw: Any) -> dict[str, Any]:
+    payload = raw
+    if isinstance(payload, str):
+        payload = json.loads(payload)
+    return payload if isinstance(payload, dict) else {}
+
+
+def bot_coms_request(args: dict | None = None, **kwargs) -> str:
+    """Synchronous request/wait path for agent callers."""
+    a = _args(args, kwargs)
+    client = _client()
+    try:
+        result = client.request(
+            a["to"],
+            _parse_payload(a.get("payload")),
+            timeout_s=float(a.get("timeout_s", 120)),
+            headers=_resolve_send_headers(a),
+            idempotency_key=a.get("idempotency_key"),
+        )
+    except (CallTimeout, CallDeadLetter, PermissionDenied) as exc:
+        error, reason = map_call_error(exc)
+        return json.dumps({"ok": False, "error": error, "reason": reason})
+    except Exception as exc:
+        error, reason = map_call_error(exc)
+        return json.dumps({"ok": False, "error": error, "reason": reason})
+    return json.dumps(
+        {
+            "ok": True,
+            "correlation_id": result.correlation_id,
+            "payload": result.payload,
+            "from": result.response_envelope.from_peer,
+        }
+    )
+
+
+def bot_coms_emit(args: dict | None = None, **kwargs) -> str:
+    """Fire-and-forget send for agent callers."""
+    a = _args(args, kwargs)
+    client = _client()
+    try:
+        env = client.fire(
+            a["to"],
+            _parse_payload(a.get("payload")),
+            msg_type=a.get("type", "event"),
+            headers=_resolve_send_headers(a),
+            idempotency_key=a.get("idempotency_key"),
+        )
+    except PermissionDenied as exc:
+        error, reason = map_call_error(exc)
+        return json.dumps({"ok": False, "error": error, "reason": reason})
+    except Exception as exc:
+        error, reason = map_call_error(exc)
+        return json.dumps({"ok": False, "error": error, "reason": reason})
+    return json.dumps({"ok": True, "envelope": env.to_dict()})
+
+
 SEND_SCHEMA = {
     "name": "bot_coms_send",
     "description": "Enqueue a bot-coms message into a peer inbox (filesystem spool).",
@@ -128,6 +229,11 @@ SEND_SCHEMA = {
             "correlation_id": {"type": "string"},
             "reply_to": {"type": "string"},
             "ttl_s": {"type": "number"},
+            "headers": {
+                "type": "object",
+                "description": "Opaque string map; use source for human conversation routing",
+                "additionalProperties": {"type": "string"},
+            },
         },
         "required": ["to", "payload"],
     },
@@ -181,5 +287,45 @@ STATUS_SCHEMA = {
     "parameters": {
         "type": "object",
         "properties": {"id": {"type": "string"}},
+    },
+}
+
+REQUEST_SCHEMA = {
+    "name": "bot_coms_request",
+    "description": "Send a request, wait for the correlated result, and auto-ack the terminal response.",
+    "parameters": {
+        "type": "object",
+        "properties": {
+            "to": {"type": "string", "description": "Destination peer id"},
+            "payload": {"type": "object", "description": "JSON object payload"},
+            "timeout_s": {"type": "number", "default": 120},
+            "headers": {
+                "type": "object",
+                "description": "Opaque string map; use source for human conversation routing",
+                "additionalProperties": {"type": "string"},
+            },
+            "idempotency_key": {"type": "string"},
+        },
+        "required": ["to", "payload"],
+    },
+}
+
+EMIT_SCHEMA = {
+    "name": "bot_coms_emit",
+    "description": "Fire-and-forget enqueue (event or request without waiting).",
+    "parameters": {
+        "type": "object",
+        "properties": {
+            "to": {"type": "string", "description": "Destination peer id"},
+            "payload": {"type": "object", "description": "JSON object payload"},
+            "type": {"type": "string", "description": "event | request", "default": "event"},
+            "headers": {
+                "type": "object",
+                "description": "Opaque string map",
+                "additionalProperties": {"type": "string"},
+            },
+            "idempotency_key": {"type": "string"},
+        },
+        "required": ["to", "payload"],
     },
 }

@@ -4,6 +4,10 @@ from __future__ import annotations
 
 from bot_coms.client import Client
 from bot_coms.config import RetryConfig, SpoolConfig
+from bot_coms.call import CallDeadLetter, CallResult, CallTimeout, fire, map_call_error, request
+from bot_coms.delegate import await_child, delegate_and_ack, forward_send
+from bot_coms.headers import forward_headers, format_source, SOURCE_HEADER
+from bot_coms.notify import source_argv
 from bot_coms.spool import init_spool
 from bot_coms.transport import FsTransport, Transport
 from bot_coms.types import (
@@ -18,6 +22,7 @@ from bot_coms.types import (
     MessageState,
     PermissionDenied,
     PoisonError,
+    SkipMessage,
     SystemClock,
     ValidationError,
 )
@@ -31,6 +36,9 @@ __all__ = [
     "Envelope",
     "ClaimedMessage",
     "MessageState",
+    "CallResult",
+    "CallTimeout",
+    "CallDeadLetter",
     "SpoolConfig",
     "RetryConfig",
     "Transport",
@@ -45,6 +53,17 @@ __all__ = [
     "DuplicateIdempotency",
     "HandlerError",
     "PoisonError",
+    "SkipMessage",
+    "request",
+    "fire",
+    "forward_send",
+    "await_child",
+    "delegate_and_ack",
+    "map_call_error",
+    "forward_headers",
+    "format_source",
+    "SOURCE_HEADER",
+    "source_argv",
     "init_spool",
     "__version__",
 ]

@@ -35,14 +35,14 @@ def test_ack_response_with_result_does_not_create_receipt_loop(clients, spool_ro
     assert not list((spool_root / "b" / "inbox").glob("*.json"))
 
 
-def test_ack_result_preserves_original_channel_routing_headers(clients) -> None:
+def test_ack_result_preserves_opaque_source_header(clients) -> None:
     a, b = clients
     request = a.send(
         "b",
         "request",
         {"need": "report"},
         reply_to="a",
-        headers={"discord_channel_id": "channel-123", "discord_thread_id": "thread-456"},
+        headers={"source": "discord:channel-123:thread-456"},
     )
     claimed = b.claim(msg_id=request.id)
     assert claimed is not None
@@ -50,7 +50,4 @@ def test_ack_result_preserves_original_channel_routing_headers(clients) -> None:
 
     response = a.claim()
     assert response is not None
-    assert response.envelope.headers == {
-        "discord_channel_id": "channel-123",
-        "discord_thread_id": "thread-456",
-    }
+    assert response.envelope.headers == {"source": "discord:channel-123:thread-456"}

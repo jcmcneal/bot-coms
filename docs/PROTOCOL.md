@@ -36,6 +36,23 @@ Optional: `reply_to` (peer id), `next_visible_at` (after nack), `priority` (int,
 
 `ack` is a **lifecycle transition**, not an envelope type.
 
+### Routing headers (opaque)
+
+bot-coms does **not** parse platform APIs. Callers may attach opaque routing metadata in `headers`:
+
+| Key | Meaning |
+|---|---|
+| `source` | Human conversation target in `platform:chat_id` or `platform:chat_id:thread_id` form (same shape as `hermes send --to`). |
+
+Rules:
+
+1. **Stamp once** at the originator (first hop from a messaging session): set `headers.source` on the outbound request.
+2. **Copy on re-assign**: every downstream `send` must copy inbound `headers` unchanged (use `forward_headers`).
+3. **Fold up the peer chain**: when a child finishes, the parent `ack`s its claimed request with `result={...}`. That emits a `type=response` into the parent's `reply_to` inbox with `headers` preserved. Repeat until the originator receives the final response.
+4. **Human notify once**: only the originator peer runs an external notify argv (e.g. `hermes send --to $source`) against the terminal `response`. Intermediate peers never notify humans.
+
+`ack` without `result` is a silent lifecycle tick (no parent response). Fold-up requires `ack` + `result`.
+
 Peer ids match `^[a-z][a-z0-9_-]{0,63}$`. Ids must not contain path separators or `..`.
 
 ## Peer-root layout
@@ -146,3 +163,13 @@ Structured JSON to stderr plus `$peer/state/audit.jsonl`. Events: `enqueued|clai
 ## Ordering and concurrency
 
 Best-effort FIFO by ULID within one peer inbox; higher `priority` first. Multiple workers per peer; exclusive rename is the lock. No cross-message transactions. No global cross-peer order.
+
+## Higher-level caller API (library)
+
+| Function | Semantics |
+|---|---|
+| `Client.request(to, payload, timeout_s=…)` | Send `type=request` with `reply_to=self`, wait for correlated `response`, silently ack terminal response, return payload. Raises `CallTimeout` / `CallDeadLetter`. |
+| `Client.fire(to, payload, msg_type="event")` | Fire-and-forget enqueue; no `reply_to`, no wait. |
+| `delegate_and_ack(client, claimed, to, payload)` | Intermediate peer: forward with copied `headers`, wait for child, fold up via `ack` + `result` exactly once. |
+
+Hermes adapter mirrors this: `bot_coms_request` (sync) and `bot_coms_emit` (fire-and-forget) for callers; atomic `claim`/`ack`/`nack` tools for workers. See `adapters/hermes_bot_coms/README.md`.

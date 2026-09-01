@@ -25,7 +25,7 @@ def config() -> SpoolConfig:
 @pytest.fixture
 def spool_root(tmp_path: Path, clock: FakeClock, config: SpoolConfig) -> Path:
     root = tmp_path / "spool"
-    init_spool(root, ["a", "b"], config=config, clock=clock)
+    init_spool(root, ["a", "b", "c"], config=config, clock=clock)
     return root
 
 
@@ -34,3 +34,11 @@ def clients(spool_root: Path, clock: FakeClock, config: SpoolConfig) -> tuple[Cl
     a = Client(spool_root, "a", clock=clock, config=config)
     b = Client(spool_root, "b", clock=clock, config=config)
     return a, b
+
+
+@pytest.fixture
+def three_clients(spool_root: Path, clock: FakeClock, config: SpoolConfig) -> tuple[Client, Client, Client]:
+    pm = Client(spool_root, "a", clock=clock, config=config)
+    swe = Client(spool_root, "b", clock=clock, config=config)
+    sub = Client(spool_root, "c", clock=clock, config=config)
+    return pm, swe, sub

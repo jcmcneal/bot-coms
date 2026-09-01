@@ -27,7 +27,65 @@ ln -s /Users/jason/projects/bot-coms/adapters/hermes_bot_coms ~/.hermes/plugins/
 | `BOT_COMS_PEER_ID` | yes |
 | `BOT_COMS_TOKEN` | no (allowlist) |
 
-Tools: `bot_coms_send`, `bot_coms_claim`, `bot_coms_reclaim`, `bot_coms_ack`, `bot_coms_nack`, `bot_coms_status`.
+## Tool surfaces: caller vs worker
+
+### Caller / originator peers (e.g. PM)
+
+Prefer the higher-level tools for agent ergonomics:
+
+| Tool | Semantics |
+|---|---|
+| `bot_coms_request` | **Synchronous** — send `type=request` with `reply_to` set, wait for correlated result, silently ack terminal response. Returns `{ok, correlation_id, payload, from}` or `{ok:false, error, reason}`. |
+| `bot_coms_emit` | **Fire-and-forget** — enqueue without waiting. Default `type=event`. Returns `{ok, envelope}`. |
+| `bot_coms_status` | Inspect one message or spool counts. |
+
+`bot_coms_request` accepts optional `headers` (opaque string map). When `headers.source`
+is omitted and the Hermes session is on a messaging platform, the adapter auto-stamps
+`source` from `HERMES_SESSION_*` in `platform:chat_id[:thread_id]` form.
+
+Structured error `reason` values: `timeout`, `dead_letter`, `permission`, `handler_error`.
+Errors never include raw tokens or payload contents.
+
+### Worker / intermediate peers (e.g. SWE, SUB)
+
+Use the atomic lifecycle tools or the long-running CLI worker:
+
+| Tool | Semantics |
+|---|---|
+| `bot_coms_reclaim` | **Pulse first** — return stale `processing/` messages to inbox. |
+| `bot_coms_claim` | Claim next eligible inbox message (or by `id`). |
+| `bot_coms_ack` | Ack claimed message; pass `result` to fold up to parent (requests/events only). |
+| `bot_coms_nack` | Retry or poison a claimed message. |
+| `bot_coms_send` | Low-level enqueue when delegating manually. |
+| `bot_coms_status` | Debug / inspection. |
+
+Intermediate peers that re-assign work should copy inbound `headers` unchanged and use
+`ack(id, result=...)` exactly once when the child completes. Silent ack (no `result`) does
+**not** fold up to the parent.
+
+Python library equivalent for delegation: `delegate_and_ack(client, claimed, to, payload)`.
+
+### Sync vs fire-and-forget contract
+
+| Need | Library | Hermes tool |
+|---|---|---|
+| Ask a peer and wait for payload | `Client.request(...)` | `bot_coms_request` |
+| Notify without expecting reply | `Client.fire(...)` | `bot_coms_emit` |
+| Process inbox as worker | `Worker` / `bot-coms worker` CLI | `bot_coms_claim` + `bot_coms_ack` |
+
+## Originator notify worker
+
+On the peer that owns the human conversation (e.g. PM), run a dedicated worker that
+delivers terminal `response` envelopes via a configured argv (no Discord imports):
+
+```bash
+bot-coms worker --peer pm --handler bot_coms.notify:source_argv \
+  --notify-argv /Users/jason/.local/bin/hermes \
+  --notify-argv send --notify-argv --to --notify-argv '{source}'
+```
+
+The worker reads the response `payload` from stdin of that argv. Intermediate peers
+only fold results up the chain via `ack` + `result`; they do not notify humans.
 
 ## Pulse integration
 

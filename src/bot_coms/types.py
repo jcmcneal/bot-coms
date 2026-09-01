@@ -57,6 +57,10 @@ class PoisonError(HandlerError):
         super().__init__(message, retryable=False)
 
 
+class SkipMessage(BotComsError):
+    """Handler declines this message; Worker releases it back to inbox unchanged."""
+
+
 class Clock(Protocol):
     def now(self) -> datetime: ...
 

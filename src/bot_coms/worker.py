@@ -7,7 +7,7 @@ from collections.abc import Callable
 from typing import Any
 
 from bot_coms.client import Client
-from bot_coms.types import ClaimedMessage, HandlerError, PoisonError
+from bot_coms.types import ClaimedMessage, HandlerError, PoisonError, SkipMessage
 
 
 class Worker:
@@ -67,6 +67,8 @@ class Worker:
         try:
             result = self.handler(claimed)
             self.client.ack(claimed, result=result)
+        except SkipMessage:
+            self.client.release(claimed)
         except PoisonError as exc:
             self.client.nack(claimed, error=str(exc), retryable=False)
         except HandlerError as exc:

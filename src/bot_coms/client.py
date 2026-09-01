@@ -24,6 +24,11 @@ from bot_coms.retry import is_expired, is_visible
 from bot_coms.spool import init_spool, list_inbox, require_peer, send_message
 from bot_coms.types import ClaimedMessage, Clock, Envelope, MessageState, SystemClock
 
+from typing import TYPE_CHECKING
+
+if TYPE_CHECKING:
+    from bot_coms.call import CallResult
+
 
 class Client:
     def __init__(
@@ -151,6 +156,58 @@ class Client:
             if found is not None or timeout_s <= 0 or time.monotonic() >= deadline:
                 return found
             time.sleep(min(self.config.poll_interval_s, 0.05))
+
+    def request(
+        self,
+        to: str,
+        payload: dict[str, Any],
+        *,
+        timeout_s: float = 120.0,
+        ttl_s: float | None = None,
+        headers: dict[str, str] | None = None,
+        idempotency_key: str | None = None,
+        correlation_id: str | None = None,
+        priority: int = 0,
+    ) -> CallResult:
+        from bot_coms.call import request as call_request
+
+        return call_request(
+            self,
+            to,
+            payload,
+            timeout_s=timeout_s,
+            ttl_s=ttl_s,
+            headers=headers,
+            idempotency_key=idempotency_key,
+            correlation_id=correlation_id,
+            priority=priority,
+        )
+
+    def fire(
+        self,
+        to: str,
+        payload: dict[str, Any],
+        *,
+        msg_type: str = "event",
+        ttl_s: float | None = None,
+        headers: dict[str, str] | None = None,
+        idempotency_key: str | None = None,
+        correlation_id: str | None = None,
+        priority: int = 0,
+    ) -> Envelope:
+        from bot_coms.call import fire as call_fire
+
+        return call_fire(
+            self,
+            to,
+            payload,
+            msg_type=msg_type,
+            ttl_s=ttl_s,
+            headers=headers,
+            idempotency_key=idempotency_key,
+            correlation_id=correlation_id,
+            priority=priority,
+        )
 
     def close(self) -> None:
         self._store.close()

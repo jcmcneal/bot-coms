@@ -57,6 +57,11 @@ def cmd_send(ns: argparse.Namespace) -> int:
     payload = json.loads(Path(ns.payload_file).read_text(encoding="utf-8"))
     if not isinstance(payload, dict):
         raise SystemExit("payload must be a JSON object")
+    headers = None
+    if ns.headers_file:
+        headers = json.loads(Path(ns.headers_file).read_text(encoding="utf-8"))
+        if not isinstance(headers, dict):
+            raise SystemExit("headers must be a JSON object")
     client = _client(ns, ns.from_peer or env_defaults()["peer_id"] or "")
     env = client.send(
         ns.to,
@@ -66,6 +71,7 @@ def cmd_send(ns: argparse.Namespace) -> int:
         correlation_id=ns.correlation_id,
         reply_to=ns.reply_to,
         ttl_s=ns.ttl,
+        headers=headers,
     )
     _json_print(_envelope_out(env))
     return 0
@@ -157,6 +163,8 @@ def cmd_worker(ns: argparse.Namespace) -> int:
 
     from bot_coms.worker import Worker
 
+    if ns.notify_argv:
+        os.environ["BOT_COMS_NOTIFY_ARGV"] = json.dumps(ns.notify_argv)
     spec = ns.handler
     mod_name, func_name = spec.rsplit(":", 1)
     func = getattr(importlib.import_module(mod_name), func_name)
@@ -194,6 +202,7 @@ def build_parser() -> argparse.ArgumentParser:
     send.add_argument("--idempotency-key", default=None)
     send.add_argument("--correlation-id", default=None)
     send.add_argument("--reply-to", default=None)
+    send.add_argument("--headers-file", default=None)
     send.add_argument("--ttl", type=float, default=None)
     send.add_argument("--token", default=None)
     send.set_defaults(func=cmd_send)
@@ -239,6 +248,12 @@ def build_parser() -> argparse.ArgumentParser:
     worker.add_argument("--root", default=None)
     worker.add_argument("--peer", default=None)
     worker.add_argument("--handler", required=True)
+    worker.add_argument(
+        "--notify-argv",
+        action="append",
+        default=None,
+        help="Notify argv fragment; repeat for each token. Use {source} for headers.source.",
+    )
     worker.add_argument("--token", default=None)
     worker.set_defaults(func=cmd_worker)
 
