@@ -7,6 +7,7 @@ import os
 from pathlib import Path
 from typing import Any
 
+from bot_coms.headers import SOURCE_HEADER, format_source
 from bot_coms_board.coordinator import TeamCoordinator, default_spool_root
 from bot_coms_board.tool import TEAM_BUS_SCHEMA, handle_team_bus
 
@@ -44,10 +45,45 @@ TEAM_ASSIGN_SCHEMA = {
             "from_profile": {"type": "string"},
             "tags": {"type": "array", "items": {"type": "string"}},
             "intent": {"type": "string", "enum": ["assign", "report_only"]},
+            "headers": {
+                "type": "object",
+                "description": "Opaque routing headers; source stamps the originating channel",
+                "additionalProperties": {"type": "string"},
+            },
         },
         "required": ["slice", "to_peer", "title", "assignment_path"],
     },
 }
+
+
+def _session_source() -> str:
+    """Auto-stamp from Hermes session context when running inside the gateway."""
+    try:
+        from gateway.session_context import get_session_env
+    except ImportError:
+        return ""
+    platform = (get_session_env("HERMES_SESSION_PLATFORM", "") or "").strip().lower()
+    if platform in {"", "cli", "tui", "local"}:
+        return ""
+    chat_id = (get_session_env("HERMES_SESSION_CHAT_ID", "") or "").strip()
+    if not chat_id:
+        return ""
+    thread_id = (get_session_env("HERMES_SESSION_THREAD_ID", "") or "").strip()
+    return format_source(platform, chat_id, thread_id)
+
+
+def _resolve_assign_headers(a: dict[str, Any]) -> dict[str, str] | None:
+    raw = a.get("headers")
+    headers: dict[str, str] | None = None
+    if isinstance(raw, dict):
+        headers = {str(k): str(v) for k, v in raw.items()}
+    source = (headers or {}).get(SOURCE_HEADER, "").strip() if headers else ""
+    if not source:
+        auto = _session_source()
+        if auto:
+            headers = dict(headers) if headers else {}
+            headers[SOURCE_HEADER] = auto
+    return headers
 
 
 def team_assign(args: dict | None = None, **kwargs) -> str:
@@ -63,6 +99,7 @@ def team_assign(args: dict | None = None, **kwargs) -> str:
             to_profile=a.get("to_profile"),
             tags=a.get("tags"),
             intent=a.get("intent") or "assign",
+            headers=_resolve_assign_headers(a),
         )
     except Exception as exc:
         return _json_result({"success": False, "error": str(exc)})

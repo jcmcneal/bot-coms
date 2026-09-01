@@ -2,16 +2,22 @@
 
 from __future__ import annotations
 
-import hashlib
 import os
 from dataclasses import dataclass, field
 from pathlib import Path
 from typing import Any
 
 from bot_coms import Client
+from bot_coms.headers import SOURCE_HEADER
 from bot_coms.types import ClaimedMessage
 
-from bot_coms_board.payload import PayloadError, SlicePayload, parse_payload, verify_content_digest
+from bot_coms_board.payload import (
+    PayloadError,
+    SlicePayload,
+    parse_payload,
+    sha256_assignment_spec,
+    verify_content_digest,
+)
 from bot_coms_board.slice_status import merge_slice_view
 from bot_coms_board.store import BusStore, open_store, profile_to_peer, team_root_from_env
 
@@ -24,7 +30,20 @@ def default_spool_root() -> Path:
 
 
 def sha256_file(path: Path) -> str:
-    return hashlib.sha256(path.read_bytes()).hexdigest()
+    return sha256_assignment_spec(path)
+
+
+def _notify_source_from_headers(headers: dict[str, str] | None) -> str | None:
+    if not headers:
+        return None
+    source = (headers.get(SOURCE_HEADER) or "").strip()
+    return source or None
+
+
+def _report_headers(notify_source: str | None) -> dict[str, str] | None:
+    if not notify_source:
+        return None
+    return {SOURCE_HEADER: notify_source}
 
 
 def read_assignment_body(path: str) -> str:
@@ -85,6 +104,7 @@ class TeamCoordinator:
         from_profile: str,
         peer: str | None = None,
         tags: list[str] | None = None,
+        notify_source: str | None = None,
     ) -> dict[str, Any]:
         path = Path(assignment_path).expanduser().resolve()
         if not path.is_file():
@@ -100,6 +120,7 @@ class TeamCoordinator:
             content_sha256=digest,
             tags=tags or [],
             status="QUEUED",
+            notify_source=notify_source,
         )
         return row.to_dict()
 
@@ -114,11 +135,13 @@ class TeamCoordinator:
         to_profile: str | None = None,
         tags: list[str] | None = None,
         intent: str = "assign",
+        headers: dict[str, str] | None = None,
     ) -> AssignResult:
         if to_profile is None:
             from bot_coms_board.store import peer_to_profile
 
             to_profile = peer_to_profile(to_peer)
+        notify_source = _notify_source_from_headers(headers)
         row = self.register_slice(
             slice_id=slice_id,
             title=title,
@@ -127,6 +150,7 @@ class TeamCoordinator:
             from_profile=from_profile,
             peer=to_peer,
             tags=tags,
+            notify_source=notify_source,
         )
         payload = SlicePayload(schema_version="1.0", intent=intent, slice=slice_id)
         idem = payload.idempotency_key(row.get("content_sha256"))
@@ -139,6 +163,7 @@ class TeamCoordinator:
                 correlation_id=slice_id,
                 idempotency_key=idem,
                 reply_to="pm",
+                headers=headers,
             )
         finally:
             client.close()
@@ -162,28 +187,33 @@ class TeamCoordinator:
             raise ValueError(f"slice not found: {slice_id}")
         payload = SlicePayload(schema_version="1.0", intent="report", slice=slice_id)
         idem = payload.idempotency_key(row.content_sha256)
+        headers = _report_headers(row.notify_source)
         client = Client(self.spool_root, from_peer)
         try:
-            env = client.fire(
+            env = client.send(
                 "pm",
+                "event",
                 payload.to_dict(),
                 correlation_id=slice_id,
                 idempotency_key=idem,
+                reply_to="pm",
+                headers=headers,
             )
         finally:
             client.close()
         return {"slice": slice_id, "row": row.to_dict(), "envelope_id": env.id}
 
     def _resolve_slice_context(
-        self, payload: SlicePayload
+        self, payload: SlicePayload, *, skip_digest: bool = False
     ) -> tuple[dict[str, Any] | None, str | None, str | None]:
         row = self.store.get_slice(payload.slice)
         if row is None:
             return None, "slice not registered", "SLICE_NOT_FOUND"
-        try:
-            verify_content_digest(row.assignment_path, row.content_sha256)
-        except PayloadError as exc:
-            return row.to_dict(), str(exc), exc.code
+        if not skip_digest:
+            try:
+                verify_content_digest(row.assignment_path, row.content_sha256)
+            except PayloadError as exc:
+                return row.to_dict(), str(exc), exc.code
         try:
             read_assignment_body(row.assignment_path)
         except OSError as exc:
@@ -281,7 +311,10 @@ class TeamCoordinator:
                     handled=True,
                 )
 
-        row_dict, err, code = self._resolve_slice_context(payload)
+        row_dict, err, code = self._resolve_slice_context(
+            payload,
+            skip_digest=payload.intent == "report",
+        )
         if err:
             if always_ack_failures:
                 ack = self._fail_ack_payload(

@@ -11,7 +11,7 @@ from datetime import datetime, timezone
 from pathlib import Path
 from typing import Any
 
-_SCHEMA_VERSION = 1
+_SCHEMA_VERSION = 2
 
 _SCHEMA = """
 CREATE TABLE IF NOT EXISTS schema_meta (
@@ -28,6 +28,7 @@ CREATE TABLE IF NOT EXISTS slices (
     title           TEXT NOT NULL,
     assignment_path TEXT NOT NULL,
     content_sha256  TEXT,
+    notify_source   TEXT,
     status          TEXT NOT NULL,
     verdict         TEXT,
     evidence        TEXT,
@@ -97,6 +98,7 @@ class SliceRow:
     title: str
     assignment_path: str
     content_sha256: str | None
+    notify_source: str | None
     status: str
     verdict: str | None
     evidence: str | None
@@ -115,6 +117,7 @@ class SliceRow:
             "title": self.title,
             "assignment_path": self.assignment_path,
             "content_sha256": self.content_sha256,
+            "notify_source": self.notify_source,
             "status": self.status,
             "verdict": self.verdict,
             "evidence": self.evidence,
@@ -142,6 +145,7 @@ class SliceRow:
             title=row["title"],
             assignment_path=row["assignment_path"],
             content_sha256=row["content_sha256"],
+            notify_source=row["notify_source"] if "notify_source" in row.keys() else None,
             status=row["status"],
             verdict=row["verdict"],
             evidence=row["evidence"],
@@ -179,6 +183,24 @@ class BusStore:
                     (str(_SCHEMA_VERSION),),
                 )
                 self._conn.commit()
+            else:
+                self._migrate(int(row["value"]))
+
+    def _migrate(self, current: int) -> None:
+        if current >= _SCHEMA_VERSION:
+            return
+        if current < 2:
+            cols = {
+                r["name"]
+                for r in self._conn.execute("PRAGMA table_info(slices)").fetchall()
+            }
+            if "notify_source" not in cols:
+                self._conn.execute("ALTER TABLE slices ADD COLUMN notify_source TEXT")
+            self._conn.execute(
+                "UPDATE schema_meta SET value = ? WHERE key = 'version'",
+                (str(2),),
+            )
+            self._conn.commit()
 
     def close(self) -> None:
         with self._lock:
@@ -196,6 +218,7 @@ class BusStore:
         content_sha256: str | None,
         tags: list[str] | None = None,
         status: str = "QUEUED",
+        notify_source: str | None = None,
     ) -> SliceRow:
         if status not in _STATUSES:
             raise ValueError(f"invalid status: {status}")
@@ -211,6 +234,7 @@ class BusStore:
                     UPDATE slices SET
                         to_profile = ?, from_profile = ?, peer = ?, tags = ?,
                         title = ?, assignment_path = ?, content_sha256 = ?,
+                        notify_source = COALESCE(?, notify_source),
                         status = ?, updated_at = ?
                     WHERE id = ?
                     """,
@@ -222,6 +246,7 @@ class BusStore:
                         title,
                         assignment_path,
                         content_sha256,
+                        notify_source,
                         status,
                         now,
                         slice_id,
@@ -232,9 +257,9 @@ class BusStore:
                     """
                     INSERT INTO slices (
                         id, to_profile, from_profile, peer, tags, title,
-                        assignment_path, content_sha256, status, verdict, evidence,
-                        active_job, superseded_by, created_at, updated_at
-                    ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, NULL, NULL, NULL, NULL, ?, ?)
+                        assignment_path, content_sha256, notify_source, status,
+                        verdict, evidence, active_job, superseded_by, created_at, updated_at
+                    ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, NULL, NULL, NULL, NULL, ?, ?)
                     """,
                     (
                         slice_id,
@@ -245,6 +270,7 @@ class BusStore:
                         title,
                         assignment_path,
                         content_sha256,
+                        notify_source,
                         status,
                         now,
                         now,
@@ -384,9 +410,9 @@ class BusStore:
                 """
                 INSERT INTO slices (
                     id, to_profile, from_profile, peer, tags, title,
-                    assignment_path, content_sha256, status, verdict, evidence,
+                    assignment_path, content_sha256, notify_source, status, verdict, evidence,
                     active_job, superseded_by, created_at, updated_at
-                ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+                ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
                 ON CONFLICT(id) DO UPDATE SET
                     to_profile = excluded.to_profile,
                     from_profile = excluded.from_profile,
@@ -395,6 +421,7 @@ class BusStore:
                     title = excluded.title,
                     assignment_path = excluded.assignment_path,
                     content_sha256 = excluded.content_sha256,
+                    notify_source = COALESCE(excluded.notify_source, slices.notify_source),
                     status = excluded.status,
                     verdict = excluded.verdict,
                     evidence = excluded.evidence,
@@ -411,6 +438,7 @@ class BusStore:
                     data["title"],
                     data["assignment_path"],
                     data.get("content_sha256"),
+                    data.get("notify_source"),
                     data["status"],
                     data.get("verdict"),
                     data.get("evidence"),

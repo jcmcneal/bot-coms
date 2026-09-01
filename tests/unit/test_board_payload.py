@@ -4,7 +4,14 @@ from __future__ import annotations
 
 import pytest
 
-from bot_coms_board.payload import PayloadError, parse_payload, verify_content_digest
+from bot_coms_board.payload import (
+    PayloadError,
+    assignment_spec_text,
+    parse_payload,
+    sha256_assignment_spec,
+    sha256_whole_file,
+    verify_content_digest,
+)
 
 
 class TestParsePayload:
@@ -53,3 +60,23 @@ class TestContentDigest:
         with pytest.raises(PayloadError) as exc:
             verify_content_digest(str(f), "deadbeef")
         assert exc.value.code == "STALE_ASSIGNMENT"
+
+    def test_spec_digest_excludes_notes_section(self, tmp_path):
+        f = tmp_path / "ctx.md"
+        base = "## Assignment\nwork\n\n## Notes\n"
+        f.write_text(base, encoding="utf-8")
+        digest = sha256_assignment_spec(f)
+        f.write_text(base + "- landed\n", encoding="utf-8")
+        verify_content_digest(str(f), digest)
+        assert sha256_whole_file(f) != digest
+
+    def test_legacy_whole_file_digest_still_valid(self, tmp_path):
+        f = tmp_path / "ctx.md"
+        body = "## Assignment\nwork\n\n## Notes\n"
+        f.write_text(body, encoding="utf-8")
+        legacy = sha256_whole_file(f)
+        verify_content_digest(str(f), legacy)
+
+    def test_assignment_spec_text(self):
+        text = "## Assignment\nx\n\n## Notes\n-y\n"
+        assert assignment_spec_text(text) == "## Assignment\nx"

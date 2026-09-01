@@ -2,7 +2,6 @@
 
 from __future__ import annotations
 
-import hashlib
 import json
 import os
 import re
@@ -12,7 +11,7 @@ from typing import Any, Optional
 from bot_coms_board.coordinator import default_spool_root
 from bot_coms_board.slice_status import merge_slice_view
 from bot_coms_board.store import open_store, profile_to_peer, team_root_from_env, utc_iso
-from bot_coms_board.payload import PayloadError, parse_payload
+from bot_coms_board.payload import PayloadError, parse_payload, sha256_assignment_spec
 
 _ACTIONS = frozenset(
     {
@@ -119,10 +118,6 @@ def _validate_slice(slice_id: Any) -> tuple[Optional[str], Optional[str]]:
     return slice_id, None
 
 
-def _sha256_file(path: Path) -> str:
-    return hashlib.sha256(path.read_bytes()).hexdigest()
-
-
 def _spool_root(args: dict) -> Path:
     raw = args.get("spool_root")
     if isinstance(raw, str) and raw.strip():
@@ -156,7 +151,7 @@ def _action_register(args: dict, actor: str) -> str:
     tag_list: list[str] = []
     if isinstance(tags, list):
         tag_list = [str(t) for t in tags]
-    digest = _sha256_file(path)
+    digest = sha256_assignment_spec(path)
     store = open_store()
     row = store.register_slice(
         slice_id=sid,  # type: ignore[arg-type]

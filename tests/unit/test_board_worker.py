@@ -2,7 +2,6 @@
 
 from __future__ import annotations
 
-import hashlib
 import json
 from pathlib import Path
 
@@ -13,11 +12,11 @@ from bot_coms.spool import init_spool
 
 from bot_coms_board.coordinator import TeamCoordinator
 from bot_coms_board.handler import make_team_handler
-from bot_coms_board.payload import SlicePayload
+from bot_coms_board.payload import SlicePayload, sha256_assignment_spec
 
 
 def _digest(path: Path) -> str:
-    return hashlib.sha256(path.read_bytes()).hexdigest()
+    return sha256_assignment_spec(path)
 
 
 def _audit_events(spool: Path, peer: str, msg_id: str) -> list[dict]:
