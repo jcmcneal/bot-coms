@@ -3,6 +3,9 @@
 Control plane is enqueue → doorbell, not pulse cron and not org-chart lookup.
 ``peers.yaml`` may map peer id → Hermes profile (routing only). Return address
 is envelope ``from`` (ack fold uses ``reply_to`` or ``from``).
+
+Origin surface is the return path: Discord-in → Discord-out via
+``hermes send --to``; spool peers still get ``hermes chat -Q``.
 """
 
 from __future__ import annotations
@@ -12,7 +15,7 @@ import subprocess
 from pathlib import Path
 from typing import Any, Callable
 
-from bot_coms.headers import source_from_headers, source_platform
+from bot_coms.headers import is_notifiable_source, source_from_headers, source_platform
 from bot_coms.profile_env import peer_profile
 from bot_coms.types import Envelope
 
@@ -25,11 +28,13 @@ _FALLBACK_PEER_PROFILES: dict[str, str] = {
     "verifier": "verifier",
     "dna-researcher": "dna-researcher",
     "em": "engineering-manager",
+    "ux": "ux-designer",
 }
 
 # Injectable for tests.
 _wake_runner: Callable[[str, str, Envelope], None] | None = None
 _adapter_runner: Callable[[str, Envelope], None] | None = None
+_send_runner: Callable[[str, str, Envelope], None] | None = None
 
 
 def set_wake_runner(runner: Callable[[str, str, Envelope], None] | None) -> None:
@@ -42,16 +47,27 @@ def set_adapter_runner(runner: Callable[[str, Envelope], None] | None) -> None:
     _adapter_runner = runner
 
 
+def set_send_runner(runner: Callable[[str, str, Envelope], None] | None) -> None:
+    global _send_runner
+    _send_runner = runner
+
+
 def doorbell_enabled() -> bool:
     raw = os.environ.get("BOT_COMS_DOORBELL", "1").strip().lower()
     return raw not in {"0", "false", "no", "off"}
 
 
-def is_running_only_ack(payload: dict[str, Any] | None) -> bool:
-    """RUNNING ack stamps SQL only — do not wake the return address."""
+def is_running_only_ack(
+    payload: dict[str, Any] | None,
+    *,
+    env_type: str = "",
+) -> bool:
+    """RUNNING ack stamps SQL only — do not wake the return address.
+
+    Also skips ``type=response`` + ``status=RUNNING`` when ``intent`` is missing
+    (live bug: extra CLI wake on incomplete RUNNING payloads).
+    """
     if not isinstance(payload, dict):
-        return False
-    if payload.get("intent") != "ack":
         return False
     status = str(payload.get("status") or "").strip().upper()
     if status != "RUNNING":
@@ -59,7 +75,13 @@ def is_running_only_ack(payload: dict[str, Any] | None) -> bool:
     verdict = str(payload.get("verdict") or "").strip().upper()
     if verdict in {"LANDED", "FAIL"}:
         return False
-    return True
+    intent_raw = payload.get("intent")
+    intent = str(intent_raw).strip().lower() if intent_raw is not None else ""
+    if intent == "ack":
+        return True
+    if not intent and (not env_type or env_type == "response"):
+        return True
+    return False
 
 
 def is_out_of_band_source(source: str) -> bool:
@@ -67,8 +89,13 @@ def is_out_of_band_source(source: str) -> bool:
     return bool(platform) and platform in _OUT_OF_BAND_PLATFORMS
 
 
+def is_messaging_source(source: str) -> bool:
+    """Human messaging surface (discord, telegram, …) — not SPM / cli."""
+    return is_notifiable_source(source) and not is_out_of_band_source(source)
+
+
 def is_terminal_fold(payload: dict[str, Any] | None) -> bool:
-    """LANDED / FAIL / report / fail — eligible for out-of-band adapter delivery."""
+    """LANDED / FAIL / report / fail — eligible for out-of-band / gateway delivery."""
     if not isinstance(payload, dict):
         return False
     intent = str(payload.get("intent") or "").strip().lower()
@@ -156,25 +183,18 @@ def build_wake_query(env: Envelope) -> str:
 
 
 def _default_wake(profile: str, peer_id: str, env: Envelope) -> None:
-    """Background ``hermes -p <profile> chat -Q --query-file``; never ``--continue``."""
+    """Background ``hermes -p <profile> chat -Q --query-file``; never ``--continue`` / ``-c``."""
     query = build_wake_query(env)
     qf = Path.home() / ".hermes" / "profiles" / profile / f"board-wake-{os.getpid()}.txt"
     qf.parent.mkdir(parents=True, exist_ok=True)
     qf.write_text(query, encoding="utf-8")
     hermes = hermes_bin()
-    slice_id = ""
-    if isinstance(env.payload, dict):
-        slice_id = str(env.payload.get("slice") or "").strip()
-    title = f"Assign {slice_id}" if slice_id else f"Mail {peer_id}"
     if profile == "default":
         cmd = [
             hermes,
             "chat",
             "--in",
             "~",
-            "-c",
-            title,
-            "--create-if-missing",
             "-Q",
             "--query-file",
             str(qf),
@@ -187,9 +207,6 @@ def _default_wake(profile: str, peer_id: str, env: Envelope) -> None:
             "chat",
             "--in",
             "~",
-            "-c",
-            title,
-            "--create-if-missing",
             "-Q",
             "--query-file",
             str(qf),
@@ -228,8 +245,24 @@ def _default_adapter(source: str, env: Envelope) -> None:
     )
 
 
+def _default_gateway_send(profile: str, source: str, env: Envelope) -> None:
+    """Relay terminal fold to messaging origin via ``hermes send --to``."""
+    hermes = hermes_bin()
+    msg = _adapter_message(env)
+    if profile == "default":
+        cmd = [hermes, "send", "--to", source, msg]
+    else:
+        cmd = [hermes, "-p", profile, "send", "--to", source, msg]
+    subprocess.Popen(  # noqa: S603 — operator-configured hermes path
+        cmd,
+        stdout=subprocess.DEVNULL,
+        stderr=subprocess.DEVNULL,
+        start_new_session=True,
+    )
+
+
 def ring(env: Envelope) -> None:
-    """Doorbell ``env.to`` via Hermes profile map. Never Discord ``hermes send``.
+    """Doorbell ``env.to``: messaging origin → gateway send; else Hermes chat -Q.
 
     Out-of-band ``headers.source`` (e.g. SPM webhook) ships terminal folds via
     the matching adapter — that is how *that* return address delivers, not a
@@ -238,13 +271,20 @@ def ring(env: Envelope) -> None:
     if not doorbell_enabled():
         return
     payload = env.payload if isinstance(env.payload, dict) else None
-    if is_running_only_ack(payload):
+    if is_running_only_ack(payload, env_type=env.type or ""):
         return
 
     source = source_from_headers(env.headers)
     if is_out_of_band_source(source) and is_terminal_fold(payload):
         (_adapter_runner or _default_adapter)(source, env)
         # Peer wake still applies when ``to`` is a spool peer (nested stack).
+    elif is_messaging_source(source) and is_terminal_fold(payload):
+        peer_id = (env.to or "").strip()
+        profile = peer_to_hermes_profile(peer_id) if peer_id else "default"
+        if not profile:
+            profile = "default"
+        (_send_runner or _default_gateway_send)(profile, source, env)
+        return
 
     peer_id = (env.to or "").strip()
     if not peer_id:

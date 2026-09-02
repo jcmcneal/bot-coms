@@ -11,6 +11,7 @@ from bot_coms.doorbell import (
     is_running_only_ack,
     peer_to_hermes_profile,
     set_adapter_runner,
+    set_send_runner,
     set_wake_runner,
 )
 from bot_coms.spool import init_spool
@@ -22,6 +23,7 @@ def wakes(monkeypatch: pytest.MonkeyPatch):
     monkeypatch.setenv("BOT_COMS_DOORBELL", "1")
     recorded: list[tuple[str, str]] = []
     adapters: list[str] = []
+    sends: list[tuple[str, str]] = []
 
     def wake(profile: str, peer_id: str, env) -> None:
         recorded.append((peer_id, profile))
@@ -29,11 +31,16 @@ def wakes(monkeypatch: pytest.MonkeyPatch):
     def adapter(source: str, env) -> None:
         adapters.append(source)
 
+    def send(profile: str, source: str, env) -> None:
+        sends.append((profile, source))
+
     set_wake_runner(wake)
     set_adapter_runner(adapter)
-    yield recorded, adapters
+    set_send_runner(send)
+    yield recorded, adapters, sends
     set_wake_runner(None)
     set_adapter_runner(None)
+    set_send_runner(None)
 
 
 @pytest.fixture
@@ -66,6 +73,10 @@ def test_peer_profile_map_is_routing_not_hardcoded_swe():
 
 def test_running_only_ack_predicate() -> None:
     assert is_running_only_ack({"intent": "ack", "slice": "S1", "status": "RUNNING"})
+    assert is_running_only_ack(
+        {"slice": "S1", "status": "RUNNING"},
+        env_type="response",
+    )
     assert not is_running_only_ack(
         {"intent": "ack", "slice": "S1", "status": "REVIEW", "verdict": "LANDED"}
     )
@@ -75,7 +86,7 @@ def test_running_only_ack_predicate() -> None:
 
 def test_assign_a_to_b_doorbells_b_not_hardcoded_swe(stack_env, wakes, monkeypatch):
     team_root, spool = stack_env
-    recorded, _adapters = wakes
+    recorded, _adapters, _sends = wakes
     monkeypatch.setenv("BOT_COMS_PEER_ID", "a")
 
     ctx = team_root / "context" / "S100.md"
@@ -101,7 +112,7 @@ def test_assign_a_to_b_doorbells_b_not_hardcoded_swe(stack_env, wakes, monkeypat
 
 def test_report_b_to_a_doorbells_a_even_if_a_is_not_pm(stack_env, wakes, monkeypatch):
     team_root, spool = stack_env
-    recorded, _adapters = wakes
+    recorded, _adapters, _sends = wakes
     monkeypatch.setenv("BOT_COMS_PEER_ID", "a")
 
     ctx = team_root / "context" / "S101.md"
@@ -134,7 +145,7 @@ def test_report_b_to_a_doorbells_a_even_if_a_is_not_pm(stack_env, wakes, monkeyp
 
 def test_running_ack_does_not_wake(stack_env, wakes, monkeypatch):
     team_root, spool = stack_env
-    recorded, _adapters = wakes
+    recorded, _adapters, _sends = wakes
     monkeypatch.setenv("BOT_COMS_PEER_ID", "a")
 
     ctx = team_root / "context" / "S102.md"
@@ -173,7 +184,7 @@ def test_running_ack_does_not_wake(stack_env, wakes, monkeypatch):
 def test_pulse_not_required_to_drain_inbox(stack_env, wakes, monkeypatch):
     """Doorbell on enqueue is enough; no pulse sweep needed to wake ``to``."""
     team_root, spool = stack_env
-    recorded, _adapters = wakes
+    recorded, _adapters, _sends = wakes
     monkeypatch.setenv("BOT_COMS_PEER_ID", "em")
 
     ctx = team_root / "context" / "S103.md"
@@ -195,7 +206,7 @@ def test_pulse_not_required_to_drain_inbox(stack_env, wakes, monkeypatch):
 
 def test_fail_ack_doorbells_return_address(stack_env, wakes, monkeypatch):
     _team_root, spool = stack_env
-    recorded, _adapters = wakes
+    recorded, _adapters, _sends = wakes
     monkeypatch.setenv("BOT_COMS_DOORBELL", "1")
 
     a = Client(spool, "a")
@@ -220,7 +231,7 @@ def test_fail_ack_doorbells_return_address(stack_env, wakes, monkeypatch):
 
 def test_spm_out_of_band_uses_adapter(stack_env, wakes, monkeypatch):
     team_root, spool = stack_env
-    recorded, adapters = wakes
+    recorded, adapters, sends = wakes
     monkeypatch.setenv("BOT_COMS_PEER_ID", "pm")
 
     ctx = team_root / "context" / "S104.md"
@@ -238,6 +249,59 @@ def test_spm_out_of_band_uses_adapter(stack_env, wakes, monkeypatch):
     )
     recorded.clear()
     adapters.clear()
+    sends.clear()
     coord.report(slice_id="S104", verdict="LANDED", evidence="done", from_peer="swe")
     assert ("pm", "project-manager") in recorded
     assert adapters == ["spm:webhook"]
+    assert sends == []
+
+
+def test_discord_terminal_fold_uses_gateway_send_not_chat(stack_env, wakes, monkeypatch):
+    team_root, spool = stack_env
+    recorded, adapters, sends = wakes
+    monkeypatch.setenv("BOT_COMS_PEER_ID", "pm")
+
+    ctx = team_root / "context" / "S105.md"
+    ctx.parent.mkdir(parents=True)
+    ctx.write_text("work\n", encoding="utf-8")
+
+    coord = TeamCoordinator(team_root=team_root, spool_root=spool)
+    coord.assign(
+        slice_id="S105",
+        to_peer="swe",
+        title="discord-origin",
+        assignment_path=str(ctx),
+        from_peer="pm",
+        headers={"source": "discord:chan:thread"},
+    )
+    recorded.clear()
+    adapters.clear()
+    sends.clear()
+    coord.report(slice_id="S105", verdict="LANDED", evidence="done", from_peer="swe")
+    assert recorded == [], "Discord terminal fold must not hermes chat -Q"
+    assert adapters == []
+    assert sends == [("project-manager", "discord:chan:thread")]
+
+
+def test_running_response_without_intent_does_not_wake(stack_env, wakes, monkeypatch):
+    _team_root, spool = stack_env
+    recorded, _adapters, sends = wakes
+    monkeypatch.setenv("BOT_COMS_DOORBELL", "1")
+
+    a = Client(spool, "a")
+    env = a.send(
+        "b",
+        "request",
+        {"intent": "assign", "slice": "SR"},
+        reply_to="a",
+    )
+    recorded.clear()
+    sends.clear()
+    b = Client(spool, "b")
+    claimed = b.claim(msg_id=env.id)
+    assert claimed is not None
+    b.ack(claimed, result={"slice": "SR", "status": "RUNNING"})
+    b.close()
+    a.close()
+    assert recorded == []
+    assert sends == []

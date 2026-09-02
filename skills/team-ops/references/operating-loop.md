@@ -10,13 +10,14 @@ stack. Do not read `peers.yaml` / `ORG.md` for “who do I report to.”
 
 | Mail | Effect |
 |---|---|
-| A → B `assign` | spool/B + doorbell B |
+| A → B `assign` | spool/B + doorbell B (`chat -Q`) |
 | B → A `report` | spool/A + doorbell A |
+| Terminal + `headers.source=discord:…` | `hermes send --to {source}` (not `chat -Q`) |
 | RUNNING-only ack | stamp SQL; **no** wake |
-| Out-of-band `headers.source` | adapter (e.g. `ping-spm.sh`), not Discord |
+| Out-of-band `headers.source` | adapter (e.g. `ping-spm.sh`) |
 
-Env: `BOT_COMS_SPOOL_ROOT`, `BOT_COMS_PEER_ID`. Optional peer→profile map in
-`peers.yaml` is **routing** for Hermes `-p` only.
+Env: `BOT_COMS_SPOOL_ROOT`, `BOT_COMS_PEER_ID`. Optional peer↔profile map in
+`peers.yaml` is **routing** for Hermes `-p` and `bot-coms job-done` only.
 
 ## Assign
 
@@ -54,8 +55,10 @@ Owning bot may register `[ASK]` scout slices. Promote to product `S*` as needed.
 
 ## Fire-and-forget
 
-After `cursor_screen launch`, end the Hermes turn. Runner wake is report-only.
-Never Discord `hermes send`. Never `bot_coms_send` to a hardcoded org parent.
+After `cursor_screen launch`, end the Hermes turn. Runner EXIT calls
+`bot-coms job-done` (sidecar + `peers.yaml`) for whoever launched the job.
+Discord origin returns via `hermes send --to`. Never `bot_coms_send` to a
+hardcoded org parent.
 
 ## Context TTL
 

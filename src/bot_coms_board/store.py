@@ -475,6 +475,8 @@ PROFILE_TO_PEER = {
     "verifier": "verifier",
     "dna-researcher": "dna-researcher",
     "project-manager": "pm",
+    "engineering-manager": "em",
+    "ux-designer": "ux",
 }
 
 PEER_TO_PROFILE = {v: k for k, v in PROFILE_TO_PEER.items()}

@@ -27,9 +27,11 @@ Contract: [`docs/BOARD.md`](../../docs/BOARD.md) in the bot-coms repo.
 **Reply stack:** address with envelope `from`/`to`. Report back to whoever mailed
 you — not PM→Morgan, not SWE→EM→PM, not roster “who do I report to.”
 
-Doorbell after spool put wakes Hermes (`hermes -p <to-profile> chat -Q`). Pulse
-cron (`b0tc0mspu15e`) is **not** the control plane — disable it; pulse is a
-stuck-lease stub only. No Discord `hermes send`.
+Doorbell after spool put: assign → `hermes chat -Q`; terminal fold with
+`headers.source=discord:…` → `hermes send --to {source}` (origin surface).
+RUNNING does not ring. Cursor EXIT → `bot-coms job-done` (sidecar +
+`peers.yaml`, no allowlist). Pulse cron (`b0tc0mspu15e`) is **not** the
+control plane — disable it; pulse is a stuck-lease stub only.
 
 ## Loop
 

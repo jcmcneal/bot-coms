@@ -16,17 +16,23 @@ B writes {from:B, to:A, intent:report, …} → spool/A/inbox → doorbell A
 ```
 
 Return address is envelope `from` (ack fold uses `reply_to` or original `from`).
-Doorbell runs after a successful spool put: fresh Hermes session
-`hermes -p <to-profile> chat -Q --query-file` (never `--continue`). Reuses the
-wake text shape from the former `wake_assign` in `scripts/bot-coms-pulse.sh`.
+Origin surface is the return path: Discord-in → Discord-out.
 
-| Envelope | Wake? |
+Doorbell after a successful spool put:
+
+| Envelope | Delivery |
 |---|---|
-| `assign` / `report` / `LANDED` / `FAIL` | doorbell `to` |
-| RUNNING-only `ack` | stamp SQL only — **no** wake |
-| Out-of-band `headers.source` (`spm:…`, webhook, …) | matching adapter (e.g. `~/.hermes/team/ping-spm.sh`) — how *that* return address ships |
+| `assign` (spool peer) | fresh Hermes session `hermes -p <to-profile> chat -Q --query-file` (never `--continue` / `-c`) |
+| Terminal fold (`report` / `LANDED` / `FAIL`) + `headers.source=discord:…` (telegram, …) | `hermes -p <to-profile> send --to {source}` — **not** `chat -Q` |
+| RUNNING-only `ack` (incl. `type=response` + `status=RUNNING` with missing intent) | stamp SQL only — **no** wake |
+| Out-of-band `headers.source` (`spm:…`, webhook, …) | matching adapter (e.g. `~/.hermes/team/ping-spm.sh`) |
 
-No Discord `hermes send`. Never print or commit `.ping-spm` secrets.
+Cursor EXIT (`hermes-team-ops` `cursor_screen` runner) calls
+`bot-coms job-done <job>` directly: sidecar `~/.hermes/cursor-screen/<job>.json`
++ `peers.yaml` profile→peer map → `team_report`. No role allowlist. No
+`wake-cli-job.sh` (install removes any live `~/.hermes/scripts/wake-cli-job.sh`).
+
+Never print or commit `.ping-spm` secrets.
 
 **Pulse cron is not the control plane.** `scripts/bot-coms-pulse.sh` is a
 stuck-lease reclaim stub. Disable LaunchAgent/cron job id `b0tc0mspu15e`.
@@ -125,4 +131,4 @@ Worker assign completion:
 
 - `correlation_id` = slice id
 - `idempotency_key` = `{intent}:{slice}:{content_sha256_prefix8}`
-- `headers.source` = optional out-of-band return path (adapter), not Discord send
+- `headers.source` = origin return path (Discord/telegram → `hermes send`; SPM → adapter)

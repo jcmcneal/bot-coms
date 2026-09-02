@@ -20,6 +20,16 @@ Env vars:
 | `BOT_COMS_NOTIFY_ARGV` | Optional JSON argv for legacy `bot_coms.notify:source_argv` (not the reply-stack control plane) |
 | `BOT_COMS_DOORBELL` | `1` (default) ring Hermes/adapter after spool put; set `0` in tests |
 | `BOT_COMS_SPM_PING` | Override path to SPM webhook adapter (default `~/.hermes/team/ping-spm.sh`) |
+| `BOT_COMS_PEERS_YAML` | Optional peers roster (default `~/.hermes/team/peers.yaml`); job-done + doorbell routing |
+
+## Post-install cleanup
+
+`wake-cli-job.sh` is retired. Cursor EXIT calls `bot-coms job-done` from the
+`cursor_screen` runner. Remove any leftover install copy:
+
+```bash
+rm -f ~/.hermes/scripts/wake-cli-job.sh
+```
 
 ## CLI smoke loopback
 

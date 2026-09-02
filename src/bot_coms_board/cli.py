@@ -180,6 +180,19 @@ def cmd_worker(ns: argparse.Namespace) -> int:
     return 0
 
 
+def cmd_job_done(ns: argparse.Namespace) -> int:
+    """Cursor EXIT → sidecar + peers.yaml → team_report (no role allowlist)."""
+    from bot_coms_board.job_done import job_done
+
+    try:
+        out = job_done(ns.job)
+    except Exception as exc:
+        _json_print({"success": False, "error": str(exc)})
+        return 1
+    _json_print(out)
+    return 0 if out.get("success") else 1
+
+
 def main(argv: list[str] | None = None) -> int:
     parser = argparse.ArgumentParser(prog="bot-coms-board")
     parser.add_argument(
@@ -254,6 +267,13 @@ def main(argv: list[str] | None = None) -> int:
     p.add_argument("--peer", required=True)
     p.add_argument("--idle-rounds", type=int, default=3)
     p.set_defaults(func=cmd_worker)
+
+    p = sub.add_parser(
+        "job-done",
+        help="Cursor EXIT → report via peers.yaml (sidecar ~/.hermes/cursor-screen/<job>.json)",
+    )
+    p.add_argument("job", help="cursor_screen job id")
+    p.set_defaults(func=cmd_job_done)
 
     ns = parser.parse_args(argv)
     return ns.func(ns)

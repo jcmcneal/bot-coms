@@ -12,7 +12,9 @@ Coordination: `team_bus` / `team_report` — never Cursor.
 
 ## After launch
 
-End Hermes turn. Do not poll. Runner calls `wake-cli-job.sh` → `team_report`.
+End Hermes turn. Do not poll. `cursor_screen` runner EXIT calls
+`bot-coms job-done <job>` (sidecar + `peers.yaml` → `team_report`).
+No role allowlist — any roster profile reports on EXIT. No `wake-cli-job.sh`.
 
 ## Hard no's
 
