@@ -59,8 +59,13 @@ def _write_tee(home: Path, job: str, exit_code: str = "0") -> Path:
 
 def test_verdict_for_exit() -> None:
     assert verdict_for_exit("0") == "LANDED"
+    assert verdict_for_exit("0", "write") == "LANDED"
+    assert verdict_for_exit("0", "force") == "LANDED"
+    assert verdict_for_exit("0", "ask") == "ASK_DONE"
+    assert verdict_for_exit("0", "plan") == "PLAN_DONE"
     assert verdict_for_exit("unknown") == "LANDED"
     assert verdict_for_exit("1") == "FAIL"
+    assert verdict_for_exit("1", "ask") == "FAIL"
     assert verdict_for_exit("orphaned") == "FAIL"
 
 
@@ -153,3 +158,30 @@ def test_job_done_fail_exit(job_env, monkeypatch) -> None:
     out = job_done("swe-job", home=home, team_root=team_root, spool_root=spool)
     assert out["verdict"] == "FAIL"
     assert out["action"] == "report"
+
+
+def test_job_done_ask_mode_reports_without_landing(job_env, monkeypatch) -> None:
+    home, team_root, spool = job_env
+    monkeypatch.setenv("BOT_COMS_PEER_ID", "pm")
+    ctx = team_root / "context" / "S9.md"
+    ctx.parent.mkdir(parents=True)
+    ctx.write_text("ask work\n", encoding="utf-8")
+    coord = TeamCoordinator(team_root=team_root, spool_root=spool)
+    coord.assign(
+        slice_id="S9",
+        to_peer="ux",
+        title="ask-slice",
+        assignment_path=str(ctx),
+        from_peer="pm",
+    )
+    _write_sidecar(home, "ask1", profile="ux-designer", slice="S9", mode="ask")
+    _write_tee(home, "ask1", "0")
+    out = job_done("ask1", home=home, team_root=team_root, spool_root=spool)
+    assert out["action"] == "report"
+    assert out["verdict"] == "ASK_DONE"
+    assert out["success"] is True
+    assert list((spool / "pm" / "inbox").glob("*.json"))
+    row = coord.store.get_slice("S9")
+    assert row is not None
+    assert row.verdict == "ASK_DONE"
+    assert row.status == "QUEUED"

@@ -1,7 +1,7 @@
 """Cursor EXIT → team report (bot-coms owns job-done; no role allowlist).
 
 Reads ``~/.hermes/cursor-screen/<job>.json``, maps Hermes profile → spool peer
-via ``peers.yaml``, stamps LANDED/FAIL from the tee ``EXIT:`` line, and enqueues
+via ``peers.yaml``, stamps a mode-aware verdict from the tee ``EXIT:`` line, and enqueues
 ``team_report`` to the assigner's return address.
 """
 
@@ -14,6 +14,7 @@ import sys
 from pathlib import Path
 from typing import Any
 
+_MODES_EXECUTE = frozenset({"write", "force", "execute"})
 _SESSION_RE = re.compile(r'"session_id"\s*:\s*"([^"]+)"')
 
 
@@ -68,11 +69,21 @@ def parse_session_id(tee: Path) -> str:
     return matches[-1] if matches else ""
 
 
-def verdict_for_exit(exit_code: str) -> str:
-    """EXIT:0 (or unknown) → LANDED; any other numeric → FAIL."""
-    if exit_code == "0" or exit_code in {"", "unknown"}:
+def verdict_for_exit(exit_code: str, mode: str = "") -> str:
+    """Map Cursor EXIT + launch mode to a board verdict.
+
+    Ask/plan EXIT:0 is a real job-done when that is all the letter asked.
+    It is ASK_DONE / PLAN_DONE, not LANDED — LANDED means execute finished.
+    """
+    mode_norm = (mode or "").strip().lower()
+    ok = exit_code == "0" or exit_code in {"", "unknown"}
+    if not ok:
+        return "FAIL"
+    if mode_norm in {"ask", "plan"}:
+        return "ASK_DONE" if mode_norm == "ask" else "PLAN_DONE"
+    if mode_norm in _MODES_EXECUTE or not mode_norm:
         return "LANDED"
-    return "FAIL"
+    return "LANDED"
 
 
 def resolve_worker_peer(profile: str) -> str:
@@ -150,7 +161,7 @@ def job_done(
     from bot_coms_board.coordinator import TeamCoordinator, default_spool_root
     from bot_coms_board.store import team_root_from_env
 
-    verdict = verdict_for_exit(exit_code)
+    verdict = verdict_for_exit(exit_code, mode_norm)
     result["peer"] = peer
     result["verdict"] = verdict
 
