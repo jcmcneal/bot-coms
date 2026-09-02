@@ -170,6 +170,9 @@ def cmd_worker(ns: argparse.Namespace) -> int:
     func = getattr(importlib.import_module(mod_name), func_name)
     client = _client(ns, _peer(ns))
     worker = Worker(client, func)
+    if ns.idle_rounds is not None:
+        worker.run_until_idle(idle_rounds=ns.idle_rounds)
+        return 0
     stop = threading.Event()
     worker.run_forever(stop=stop)
     return 0
@@ -253,6 +256,12 @@ def build_parser() -> argparse.ArgumentParser:
         action="append",
         default=None,
         help="Notify argv fragment; repeat for each token. Use {source} for headers.source.",
+    )
+    worker.add_argument(
+        "--idle-rounds",
+        type=int,
+        default=None,
+        help="Exit after this many empty poll rounds (pulse/cron mode).",
     )
     worker.add_argument("--token", default=None)
     worker.set_defaults(func=cmd_worker)

@@ -16,7 +16,10 @@ Env: `BOT_COMS_SPOOL_ROOT`, `BOT_COMS_PEER_ID`.
 1. Write `~/.hermes/team/context/<SLICE>.md`
 2. `team_assign` (slice, to_peer, title, assignment_path, tags) — fire-and-forget
 3. End turn
-4. Poll `team_bus slice` until `RUNNING` + non-null `active_job` (or BLOCKED/FAIL)
+4. `RUNNING` + `active_job` arrive via notify (not `team_bus` polling)
+5. After `team_report`, `LANDED`/`FAIL` + evidence arrive via notify
+
+`team_bus slice` is inspect-only after assign.
 
 ## Worker assign (SWE)
 
@@ -31,8 +34,12 @@ Assign message stays in `processing` until step 4.
 
 ## Worker non-assign
 
-Pulse runs `bot-coms-board worker` for `report_only`, `cancel`, `report` — handled
-in Python, no Cursor.
+Pulse runs `bot-coms-board worker` for `report_only`, `cancel`, `report` on worker
+peers — handled in Python, no Cursor.
+
+PM: pulse runs `bot-coms worker` with `bot_coms.notify:source_argv` for
+`type=response` + notifiable `headers.source` (requires `BOT_COMS_NOTIFY_ARGV`).
+Board worker on PM handles `report` events first; the folded response is notify.
 
 ## Report
 

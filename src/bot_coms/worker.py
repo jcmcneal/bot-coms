@@ -51,7 +51,8 @@ class Worker:
         with self._lock:
             self._current = claimed
 
-    def handle_one(self, claimed: ClaimedMessage) -> None:
+    def handle_one(self, claimed: ClaimedMessage) -> bool:
+        """Handle one message. Returns True when work progressed (False on SkipMessage)."""
         store = self.client.store
         store.gc(self.client.clock, self.client.config.idempotency_retention_s)
         begin = store.begin(
@@ -59,22 +60,27 @@ class Worker:
         )
         if begin.status == "completed":
             self.client.ack(claimed, result=begin.result)
-            return
+            return True
         if begin.status == "in_progress":
             self.client.nack(claimed, error="idempotency in_progress", retryable=True)
-            return
+            return True
         self._set_current(claimed)
         try:
             result = self.handler(claimed)
             self.client.ack(claimed, result=result)
+            return True
         except SkipMessage:
             self.client.release(claimed)
+            return False
         except PoisonError as exc:
             self.client.nack(claimed, error=str(exc), retryable=False)
+            return True
         except HandlerError as exc:
             self.client.nack(claimed, error=str(exc), retryable=exc.retryable)
+            return True
         except Exception as exc:
             self.client.nack(claimed, error=str(exc), retryable=True)
+            return True
         finally:
             self._set_current(None)
 
@@ -117,8 +123,12 @@ class Worker:
                         break
                     own_stop.wait(self.poll_interval_s)
                     continue
-                idle = 0
-                self.handle_one(claimed)
+                if self.handle_one(claimed):
+                    idle = 0
+                else:
+                    idle += 1
+                    if idle >= idle_rounds:
+                        break
         finally:
             hb_stop.set()
             hb.join(timeout=1)

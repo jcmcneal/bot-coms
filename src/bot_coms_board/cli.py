@@ -9,6 +9,7 @@ import sys
 from pathlib import Path
 from typing import Any
 
+from bot_coms.headers import resolve_assign_headers
 from bot_coms_board.coordinator import TeamCoordinator, default_spool_root
 from bot_coms_board.handler import run_worker
 from bot_coms_board.migrate import migrate_bus_md
@@ -63,6 +64,7 @@ def cmd_assign(ns: argparse.Namespace) -> int:
             to_profile=ns.to_profile,
             tags=[t.strip() for t in ns.tags.split(",") if t.strip()] if ns.tags else None,
             intent=ns.intent,
+            headers=resolve_assign_headers(None),
         )
     except Exception as exc:
         _json_print({"success": False, "error": str(exc)})

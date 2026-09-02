@@ -69,8 +69,8 @@ class TestBusStore:
         store.set_verdict("S9", verdict="LANDED", evidence="tee ok")
         row = store.get_slice("S9")
         assert row is not None
-        assert row.status == "RUNNING"
-        assert row.active_job == "s9-job"
+        assert row.status == "REVIEW"
+        assert row.active_job is None
         assert row.verdict == "LANDED"
 
     def test_log(self, store: BusStore):

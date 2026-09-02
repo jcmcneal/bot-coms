@@ -31,6 +31,8 @@ def make_team_handler(
     )
 
     def handler(claimed: ClaimedMessage) -> dict[str, Any] | None:
+        if claimed.envelope.type == "response":
+            raise SkipMessage()
         from bot_coms import Client
 
         client = Client(coord.spool_root, peer)

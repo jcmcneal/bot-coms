@@ -26,7 +26,27 @@ def format_notify_argv(argv: list[str], source: str) -> list[str]:
 
 
 def payload_text(payload: dict[str, Any]) -> str:
+    line = summary_line(payload)
+    if line:
+        return line
     return json.dumps(payload, ensure_ascii=False, indent=2)
+
+
+def summary_line(payload: dict[str, Any]) -> str | None:
+    """One-line human summary for terminal report acks."""
+    if payload.get("intent") != "ack":
+        return None
+    slice_id = payload.get("slice")
+    verdict = payload.get("verdict")
+    if not isinstance(slice_id, str) or not slice_id:
+        return None
+    if not isinstance(verdict, str) or not verdict.strip():
+        return None
+    parts = [slice_id, verdict.strip()]
+    evidence = payload.get("evidence")
+    if isinstance(evidence, str) and evidence.strip():
+        parts.append(f"— {evidence.strip()}")
+    return " ".join(parts)
 
 
 def run_notify_argv(argv: list[str], source: str, payload: dict[str, Any]) -> None:

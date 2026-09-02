@@ -2,9 +2,11 @@ from __future__ import annotations
 
 from bot_coms.headers import (
     SOURCE_HEADER,
+    default_source_from_env,
     format_source,
     forward_headers,
     is_notifiable_source,
+    resolve_assign_headers,
     source_from_headers,
     source_platform,
 )
@@ -62,3 +64,26 @@ def test_source_from_headers() -> None:
 def test_source_platform() -> None:
     assert source_platform("discord:1:2") == "discord"
     assert source_platform("") == ""
+
+
+def test_default_source_from_env(monkeypatch) -> None:
+    monkeypatch.delenv("BOT_COMS_DEFAULT_SOURCE", raising=False)
+    assert default_source_from_env() == ""
+    monkeypatch.setenv("BOT_COMS_DEFAULT_SOURCE", "discord:1543040481368346765")
+    assert default_source_from_env() == "discord:1543040481368346765"
+    monkeypatch.setenv("BOT_COMS_DEFAULT_SOURCE", "cli:local")
+    assert default_source_from_env() == ""
+
+
+def test_resolve_assign_headers_prefers_explicit() -> None:
+    out = resolve_assign_headers(
+        {"source": "telegram:1"},
+        session_source="discord:2",
+    )
+    assert out == {"source": "telegram:1"}
+
+
+def test_resolve_assign_headers_falls_back_to_env(monkeypatch) -> None:
+    monkeypatch.setenv("BOT_COMS_DEFAULT_SOURCE", "discord:99")
+    out = resolve_assign_headers(None, session_source="")
+    assert out == {"source": "discord:99"}

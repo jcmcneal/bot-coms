@@ -16,6 +16,8 @@ Env vars:
 | `BOT_COMS_SPOOL_ROOT` | Default `--root` |
 | `BOT_COMS_PEER_ID` | Default `--peer` / `--from` |
 | `BOT_COMS_TOKEN` | Allowlist token (never logged) |
+| `BOT_COMS_DEFAULT_SOURCE` | Default `headers.source` for cli/tui assigns (PM fold target) |
+| `BOT_COMS_NOTIFY_ARGV` | JSON argv for `bot_coms.notify:source_argv` (PM notify worker) |
 
 ## CLI smoke loopback
 
@@ -38,4 +40,5 @@ This package **does not** edit Hermes configuration.
 
 The adapter imports only `bot_coms` plus Hermes `PluginContext`. It does not import A2A, read BUS.md, or touch Open Genome.
 
-Required at tool-call time: `BOT_COMS_SPOOL_ROOT`, `BOT_COMS_PEER_ID`. Optional: `BOT_COMS_TOKEN`.
+Required at tool-call time: `BOT_COMS_SPOOL_ROOT`, `BOT_COMS_PEER_ID`. Optional:
+`BOT_COMS_TOKEN`, `BOT_COMS_DEFAULT_SOURCE`, `BOT_COMS_NOTIFY_ARGV` (PM notify worker).

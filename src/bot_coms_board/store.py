@@ -68,6 +68,16 @@ _STATUSES = frozenset(
 )
 
 
+def _status_for_verdict(verdict: str) -> tuple[str, bool] | None:
+    """Map terminal verdicts to SQL status (and whether to clear active_job)."""
+    key = verdict.strip().upper()
+    if key == "LANDED":
+        return ("REVIEW", True)
+    if key == "FAIL":
+        return ("BLOCKED", True)
+    return None
+
+
 def default_team_root() -> Path:
     return Path.home() / ".hermes" / "team"
 
@@ -352,6 +362,11 @@ class BusStore:
                 (new_verdict, new_evidence, now, slice_id),
             )
             self._conn.commit()
+        if verdict is not None:
+            status_update = _status_for_verdict(verdict)
+            if status_update is not None:
+                new_status, clear_job = status_update
+                return self.set_status(slice_id, new_status, clear_active_job=clear_job)
         return self.get_slice(slice_id)
 
     def append_log(self, actor: str, message: str, *, at: str | None = None) -> dict[str, Any]:

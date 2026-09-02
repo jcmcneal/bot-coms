@@ -7,7 +7,7 @@ import os
 from pathlib import Path
 from typing import Any
 
-from bot_coms.headers import SOURCE_HEADER, format_source
+from bot_coms.headers import format_source, resolve_assign_headers
 from bot_coms_board.coordinator import TeamCoordinator, default_spool_root
 from bot_coms_board.tool import TEAM_BUS_SCHEMA, handle_team_bus
 
@@ -31,8 +31,7 @@ TEAM_ASSIGN_SCHEMA = {
     "name": "team_assign",
     "description": (
         "PM assign: register slice in bus.sqlite and send lean bot-coms ping "
-        "(fire-and-forget). Does not wait for ACK — poll team_bus slice for "
-        "RUNNING + active_job."
+        "(fire-and-forget). Does not wait for ACK — RUNNING/LANDED arrive via notify."
     ),
     "parameters": {
         "type": "object",
@@ -77,13 +76,7 @@ def _resolve_assign_headers(a: dict[str, Any]) -> dict[str, str] | None:
     headers: dict[str, str] | None = None
     if isinstance(raw, dict):
         headers = {str(k): str(v) for k, v in raw.items()}
-    source = (headers or {}).get(SOURCE_HEADER, "").strip() if headers else ""
-    if not source:
-        auto = _session_source()
-        if auto:
-            headers = dict(headers) if headers else {}
-            headers[SOURCE_HEADER] = auto
-    return headers
+    return resolve_assign_headers(headers, session_source=_session_source())
 
 
 def team_assign(args: dict | None = None, **kwargs) -> str:

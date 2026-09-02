@@ -409,11 +409,17 @@ class TeamCoordinator:
 
         if payload.intent == "report":
             if payload.intent in auto_handle_intents:
-                ack = {
+                verdict = row_dict.get("verdict") or ""
+                evidence = row_dict.get("evidence") or ""
+                status = row_dict.get("status") or "QUEUED"
+                ack: dict[str, Any] = {
                     "intent": "ack",
                     "slice": payload.slice,
-                    "status": "REPORT_RECEIVED",
+                    "status": status,
+                    "verdict": verdict,
                 }
+                if evidence:
+                    ack["evidence"] = evidence
                 return InboxDecision(
                     message_id=msg_id,
                     slice_id=payload.slice,

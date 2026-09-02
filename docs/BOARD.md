@@ -59,12 +59,17 @@ bot-coms-board migrate [--dry-run]
 1. Write `team/context/<SLICE>.md`
 2. `team_assign` (register + send; does **not** wait for ACK)
 3. End turn
-4. Poll `team_bus slice` until `status=RUNNING` **and** `active_job` is set
+4. `RUNNING` + `active_job` arrive via notify (`type=response` fold-up from SWE ack)
+5. `LANDED` / `FAIL` + evidence arrive the same way after `team_report`
+
+`team_bus slice` is **inspect-only** after assign — do not poll for completion.
 
 ## Worker receive
 
 Pulse **wakes Hermes only** for `assign`. Pulse runs `bot-coms-board worker` for
-`report_only` / `cancel` / `report` (handled in Python, no Cursor).
+`report_only` / `cancel` / `report` on worker peers (handled in Python, no Cursor).
+On **PM**, pulse runs `bot-coms worker --handler bot_coms.notify:source_argv` for
+`type=response` envelopes with a notifiable `headers.source` (Discord fold-back).
 
 SWE assign completion:
 

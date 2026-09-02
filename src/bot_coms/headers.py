@@ -2,6 +2,8 @@
 
 from __future__ import annotations
 
+import os
+
 from bot_coms.types import Envelope
 
 SOURCE_HEADER = "source"
@@ -46,3 +48,25 @@ def format_source(platform: str, chat_id: str, thread_id: str = "") -> str:
     if thread_id:
         return f"{platform}:{chat_id}:{thread_id}"
     return f"{platform}:{chat_id}"
+
+
+def default_source_from_env() -> str:
+    """Fold target for cli/tui/local assigns (``BOT_COMS_DEFAULT_SOURCE``)."""
+    raw = os.environ.get("BOT_COMS_DEFAULT_SOURCE", "").strip()
+    return raw if is_notifiable_source(raw) else ""
+
+
+def resolve_assign_headers(
+    headers: dict[str, str] | None,
+    *,
+    session_source: str = "",
+) -> dict[str, str] | None:
+    """Stamp ``headers.source`` from explicit, session, or default env."""
+    out: dict[str, str] = dict(headers) if headers else {}
+    source = source_from_headers(out)
+    if not source:
+        source = (session_source or "").strip() or default_source_from_env()
+    if not source:
+        return headers
+    out[SOURCE_HEADER] = source
+    return out

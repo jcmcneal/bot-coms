@@ -259,10 +259,128 @@ class TestCoordinator:
         result = coord.process_inbox("pm", limit=1)
         assert len(result.decisions) == 1
         assert result.decisions[0].disposition == "report_received"
+        ack = result.decisions[0].ack_result
+        assert ack is not None
+        assert ack["verdict"] == "LANDED"
+        assert ack["status"] == "REVIEW"
 
         result_env = read_json(spool / "pm" / "results" / "S13.json")
         assert result_env["headers"] == {"source": "discord:channel-123"}
         assert result_env["payload"]["intent"] == "ack"
+        assert result_env["payload"]["verdict"] == "LANDED"
+        assert result_env["payload"]["status"] == "REVIEW"
+
+    def test_landed_clears_running_and_active_job(self, coord_env):
+        team_root, spool = coord_env
+        ctx = team_root / "context" / "S15.md"
+        ctx.parent.mkdir(parents=True)
+        ctx.write_text("work\n", encoding="utf-8")
+
+        coord = TeamCoordinator(team_root=team_root, spool_root=spool)
+        coord.register_slice(
+            slice_id="S15",
+            title="landed",
+            assignment_path=str(ctx),
+            to_profile="software-engineer",
+            from_profile="project-manager",
+            peer="swe",
+        )
+        coord.store.set_status("S15", "RUNNING", active_job="s15-job")
+
+        coord.report(
+            slice_id="S15",
+            verdict="LANDED",
+            evidence="pytest exit=0",
+            from_peer="swe",
+        )
+
+        row = coord.store.get_slice("S15")
+        assert row is not None
+        assert row.status == "REVIEW"
+        assert row.active_job is None
+        assert row.verdict == "LANDED"
+        assert row.evidence == "pytest exit=0"
+
+    def test_cli_assign_stamps_default_source(self, coord_env, monkeypatch):
+        team_root, spool = coord_env
+        monkeypatch.setenv("BOT_COMS_DEFAULT_SOURCE", "discord:1543040481368346765")
+        ctx = team_root / "context" / "S16.md"
+        ctx.parent.mkdir(parents=True)
+        ctx.write_text("work\n", encoding="utf-8")
+
+        coord = TeamCoordinator(team_root=team_root, spool_root=spool)
+        from bot_coms.headers import resolve_assign_headers
+
+        result = coord.assign(
+            slice_id="S16",
+            to_peer="swe",
+            title="cli default",
+            assignment_path=str(ctx),
+            headers=resolve_assign_headers(None),
+        )
+        assert result.outbound_id
+        env = _read_inbox_envelope(spool, "swe")
+        assert env["headers"] == {"source": "discord:1543040481368346765"}
+        row = coord.store.get_slice("S16")
+        assert row is not None
+        assert row.notify_source == "discord:1543040481368346765"
+
+    def test_notify_path_response_with_source(self, coord_env, tmp_path, monkeypatch):
+        team_root, spool = coord_env
+        ctx = team_root / "context" / "S17.md"
+        ctx.parent.mkdir(parents=True)
+        ctx.write_text("work\n", encoding="utf-8")
+
+        recorder = tmp_path / "notify.out"
+        script = tmp_path / "record.sh"
+        script.write_text(
+            "#!/bin/sh\n"
+            "echo \"$1\" >> \"$2\"\n"
+            "cat >> \"$2\"\n",
+            encoding="utf-8",
+        )
+        script.chmod(0o755)
+        monkeypatch.setenv(
+            "BOT_COMS_NOTIFY_ARGV",
+            json.dumps([str(script), "{source}", str(recorder)]),
+        )
+
+        coord = TeamCoordinator(team_root=team_root, spool_root=spool)
+        coord.assign(
+            slice_id="S17",
+            to_peer="swe",
+            title="notify path",
+            assignment_path=str(ctx),
+            headers={"source": "discord:channel-notify"},
+        )
+        coord.report(
+            slice_id="S17",
+            verdict="LANDED",
+            evidence="tee ok exit=0",
+            from_peer="swe",
+        )
+
+        from bot_coms import Worker
+        from bot_coms.notify import source_argv
+        from bot_coms_board.handler import make_team_handler
+
+        board_client = Client(spool, "pm")
+        board_handler = make_team_handler(peer="pm", team_root=team_root, spool_root=spool)
+        Worker(board_client, board_handler, poll_interval_s=0.01).run_until_idle(idle_rounds=3)
+        board_client.close()
+
+        pm = Client(spool, "pm")
+        response = pm.claim()
+        assert response is not None
+        assert response.envelope.type == "response"
+        assert response.envelope.headers == {"source": "discord:channel-notify"}
+        Worker(pm, source_argv, poll_interval_s=0.01).handle_one(response)
+        pm.close()
+
+        text = recorder.read_text(encoding="utf-8")
+        assert text.startswith("discord:channel-notify\n")
+        assert "S17 LANDED" in text
+        assert "tee ok exit=0" in text
 
     def test_relay_failure_notifies_pm_with_source(self, coord_env):
         team_root, spool = coord_env

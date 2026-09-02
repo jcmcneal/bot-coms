@@ -11,7 +11,7 @@ from bot_coms import Client
 from bot_coms.atomic import read_json
 from bot_coms.call import CallDeadLetter, CallTimeout, map_call_error
 from bot_coms.envelope import envelope_from_dict
-from bot_coms.headers import SOURCE_HEADER, format_source
+from bot_coms.headers import SOURCE_HEADER, format_source, resolve_assign_headers
 from bot_coms.types import ClaimedMessage, PermissionDenied
 
 
@@ -63,13 +63,7 @@ def _session_source() -> str:
 
 def _resolve_send_headers(a: dict[str, Any]) -> dict[str, str] | None:
     headers = _normalize_headers(a.get("headers"))
-    source = (headers or {}).get(SOURCE_HEADER, "").strip() if headers else ""
-    if not source:
-        auto = _session_source()
-        if auto:
-            headers = dict(headers) if headers else {}
-            headers[SOURCE_HEADER] = auto
-    return headers
+    return resolve_assign_headers(headers, session_source=_session_source())
 
 
 def bot_coms_send(args: dict | None = None, **kwargs) -> str:
