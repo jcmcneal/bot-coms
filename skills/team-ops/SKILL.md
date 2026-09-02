@@ -17,29 +17,29 @@ Contract: [`docs/BOARD.md`](../../docs/BOARD.md) in the bot-coms repo.
 
 | Role | Tool | When |
 |---|---|---|
-| PM | `team_assign` | dispatch slice (async, no wait) |
-| PM | `team_bus` | status, list, verdict, log, `write_doc` (TEAM.md / STANDING.md), verify handle |
+| Assigner | `team_assign` | dispatch slice (async, no wait) → doorbell `to` |
+| Any | `team_bus` | status, list, verdict, log, `write_doc` (TEAM.md / STANDING.md), verify handle |
 | Worker | `team_inbox` | on assign doorbell |
-| Worker | `bot_coms_ack` | after cursor launch + status stamp |
-| Worker | `team_report` | after runner wake |
+| Worker | `bot_coms_ack` | after cursor launch + status stamp (RUNNING = no wake) |
+| Worker | `team_report` | after runner wake → doorbell return address (`from`) |
 | Worker | `cursor_screen` | product work only |
 
-Pulse: `assign` → wake only. `report_only`/`cancel`/`report` → `bot-coms-board worker`
-on worker peers. PM notify: `bot-coms worker` + `source_argv` on terminal responses.
+**Reply stack:** address with envelope `from`/`to`. Report back to whoever mailed
+you — not PM→Morgan, not SWE→EM→PM, not roster “who do I report to.”
+
+Doorbell after spool put wakes Hermes (`hermes -p <to-profile> chat -Q`). Pulse
+cron (`b0tc0mspu15e`) is **not** the control plane — disable it; pulse is a
+stuck-lease stub only. No Discord `hermes send`.
 
 ## Loop
 
-1. PM writes `~/.hermes/team/context/<SLICE>.md` (Hermes `write_file` — ungated)
-2. PM `team_assign` → end turn (no wait)
-3. PM receives `RUNNING` + `active_job` via notify (SWE ack fold-up)
-4. SWE: `team_inbox` → ONE `cursor_screen` → `team_bus status` → `bot_coms_ack`
-5. Runner wake: `team_report` (or wake script stamps automatically)
-6. PM receives `LANDED`/`FAIL` + evidence via notify; `team_bus slice` is inspect-only
-7. PM folds vault `Handoff.md`
-
-Pulse: `assign` → wake only. Worker peers: `report_only`/`cancel`/`report` →
-`bot-coms-board worker`. PM: `type=response` + notifiable `headers.source` →
-`bot-coms worker` with `bot_coms.notify:source_argv`.
+1. Assigner writes `~/.hermes/team/context/<SLICE>.md` (Hermes `write_file` — ungated)
+2. `team_assign` → end turn (doorbell assignee; no wait)
+3. Assignee stamps `RUNNING` + `active_job` in SQL; RUNNING ack does not wake
+4. Assignee: `team_inbox` → ONE `cursor_screen` → `team_bus status` → `bot_coms_ack`
+5. Runner wake: `team_report` (doorbell return address)
+6. Assigner receives `LANDED`/`FAIL` + evidence; `team_bus slice` is inspect-only
+7. Fold vault `Handoff.md` / out-of-band adapter as needed (`ping-spm.sh` for SPM)
 
 ## Hard limits
 
@@ -47,14 +47,15 @@ Pulse: `assign` → wake only. Worker peers: `report_only`/`cancel`/`report` →
 - Never use legacy text PINGs
 - Never ACK RUNNING without `active_job`
 - Never launch verify Cursor job from a wake
-- Never print `.env` / tokens
+- Never print `.env` / tokens / `.ping-spm` secrets
+- Never look up org chart / `ORG.md` / roster for parent — use envelope `from`
 - Constitution / standing rules: `team_bus write_doc` on `~/.hermes/TEAM.md` or
   `~/.hermes/team/STANDING.md` — never Hermes `patch` / `write_file` on TEAM.md
 - Product code: ask → plan → force in worktree (not main)
 
 ## References
 
-- [`references/operating-loop.md`](references/operating-loop.md) — peer keys, assign sequence
+- [`references/operating-loop.md`](references/operating-loop.md) — from/to addressing
 - [`references/cursor-cli.md`](references/cursor-cli.md) — Cursor CLI recipes
 - [`references/provision.md`](references/provision.md) — new bot wiring
 - [`references/soul-templates/`](references/soul-templates/) — role identity templates

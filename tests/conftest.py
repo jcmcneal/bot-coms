@@ -8,6 +8,12 @@ import pytest
 from bot_coms import Client, FakeClock, SpoolConfig, init_spool
 
 
+@pytest.fixture(autouse=True)
+def _disable_doorbell_by_default(monkeypatch: pytest.MonkeyPatch) -> None:
+    """Transport tests must not spawn Hermes; reply-stack tests opt in."""
+    monkeypatch.setenv("BOT_COMS_DOORBELL", "0")
+
+
 @pytest.fixture
 def clock() -> FakeClock:
     return FakeClock(datetime(2026, 8, 31, 18, 0, tzinfo=timezone.utc))

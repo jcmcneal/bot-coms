@@ -30,8 +30,9 @@ def team_bus(args: dict | None = None, **kwargs) -> str:
 TEAM_ASSIGN_SCHEMA = {
     "name": "team_assign",
     "description": (
-        "PM assign: register slice in bus.sqlite and send lean bot-coms ping "
-        "(fire-and-forget). Does not wait for ACK — RUNNING/LANDED arrive via notify."
+        "Assigner dispatch: register slice in bus.sqlite and send lean bot-coms ping "
+        "(fire-and-forget). Doorbell wakes ``to``; report returns to envelope ``from``. "
+        "RUNNING ack does not wake — LANDED/FAIL arrive via team_report."
     ),
     "parameters": {
         "type": "object",
@@ -82,6 +83,7 @@ def _resolve_assign_headers(a: dict[str, Any]) -> dict[str, str] | None:
 def team_assign(args: dict | None = None, **kwargs) -> str:
     a = _args(args, kwargs)
     coord = TeamCoordinator()
+    from_peer = os.environ.get("BOT_COMS_PEER_ID") or None
     try:
         result = coord.assign(
             slice_id=a["slice"],
@@ -89,6 +91,7 @@ def team_assign(args: dict | None = None, **kwargs) -> str:
             title=a["title"],
             assignment_path=a["assignment_path"],
             from_profile=a.get("from_profile") or "project-manager",
+            from_peer=from_peer,
             to_profile=a.get("to_profile"),
             tags=a.get("tags"),
             intent=a.get("intent") or "assign",
@@ -167,7 +170,8 @@ def team_inbox(args: dict | None = None, **kwargs) -> str:
 TEAM_REPORT_SCHEMA = {
     "name": "team_report",
     "description": (
-        "Stamp verdict in bus.sqlite and emit lean {intent:report} doorbell to pm."
+        "Stamp verdict in bus.sqlite and emit lean {intent:report} doorbell "
+        "to whoever assigned (envelope return address / from_profile peer)."
     ),
     "parameters": {
         "type": "object",

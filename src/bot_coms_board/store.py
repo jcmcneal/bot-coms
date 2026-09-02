@@ -481,8 +481,19 @@ PEER_TO_PROFILE = {v: k for k, v in PROFILE_TO_PEER.items()}
 
 
 def profile_to_peer(profile: str) -> str:
+    """Hermes profile → spool peer id (peers.yaml routing, then static fallback)."""
+    from bot_coms.profile_env import profile_to_peer_id
+
+    mapped = profile_to_peer_id(profile)
+    if mapped:
+        return mapped
     return PROFILE_TO_PEER.get(profile, profile)
 
 
 def peer_to_profile(peer: str) -> str:
+    from bot_coms.profile_env import peer_profile
+
+    mapped = peer_profile(peer)
+    if mapped:
+        return mapped
     return PEER_TO_PROFILE.get(peer, peer)

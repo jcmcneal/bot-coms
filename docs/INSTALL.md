@@ -16,8 +16,10 @@ Env vars:
 | `BOT_COMS_SPOOL_ROOT` | Default `--root` |
 | `BOT_COMS_PEER_ID` | Default `--peer` / `--from` |
 | `BOT_COMS_TOKEN` | Allowlist token (never logged) |
-| `BOT_COMS_DEFAULT_SOURCE` | Default `headers.source` for cli/tui assigns (PM fold target); falls back to `~/.hermes/team/.env` then `~/.hermes/profiles/<profile>/.env` from `peers.yaml` |
-| `BOT_COMS_NOTIFY_ARGV` | JSON argv for `bot_coms.notify:source_argv` (PM notify worker) |
+| `BOT_COMS_DEFAULT_SOURCE` | Optional `headers.source` stamp for cli/tui assigns; falls back to team/profile dotenv |
+| `BOT_COMS_NOTIFY_ARGV` | Optional JSON argv for legacy `bot_coms.notify:source_argv` (not the reply-stack control plane) |
+| `BOT_COMS_DOORBELL` | `1` (default) ring Hermes/adapter after spool put; set `0` in tests |
+| `BOT_COMS_SPM_PING` | Override path to SPM webhook adapter (default `~/.hermes/team/ping-spm.sh`) |
 
 ## CLI smoke loopback
 

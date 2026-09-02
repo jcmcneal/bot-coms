@@ -2,28 +2,35 @@
 
 Parent: `team-ops` skill. Contract: `bot-coms/docs/BOARD.md`.
 
-## Peer keys
+## Addressing (reply stack)
 
-| From | Peer id |
+Envelope fields **`from`** and **`to`** are the address. Return address is
+`from` (ack fold: `reply_to` or original `from`). Nested assigns nest the
+stack. Do not read `peers.yaml` / `ORG.md` for “who do I report to.”
+
+| Mail | Effect |
 |---|---|
-| PM | `swe`, `verifier`, `dna-researcher` |
-| Workers | `pm` |
+| A → B `assign` | spool/B + doorbell B |
+| B → A `report` | spool/A + doorbell A |
+| RUNNING-only ack | stamp SQL; **no** wake |
+| Out-of-band `headers.source` | adapter (e.g. `ping-spm.sh`), not Discord |
 
-Env: `BOT_COMS_SPOOL_ROOT`, `BOT_COMS_PEER_ID`.
+Env: `BOT_COMS_SPOOL_ROOT`, `BOT_COMS_PEER_ID`. Optional peer→profile map in
+`peers.yaml` is **routing** for Hermes `-p` only.
 
-## PM assign
+## Assign
 
 1. Write `~/.hermes/team/context/<SLICE>.md`
 2. `team_assign` (slice, to_peer, title, assignment_path, tags) — fire-and-forget
-3. End turn
-4. `RUNNING` + `active_job` arrive via notify (not `team_bus` polling)
-5. After `team_report`, `LANDED`/`FAIL` + evidence arrive via notify
+3. End turn (doorbell already rang `to`)
+4. Assignee stamps `RUNNING` + `active_job` (RUNNING ack does not wake)
+5. After `team_report`, `LANDED`/`FAIL` doorbell the return address
 
-`team_bus slice` is inspect-only after assign.
+`team_bus slice` is inspect-only after assign. Pulse is not required to drain.
 
-## Worker assign (SWE)
+## Worker assign
 
-Pulse wakes on `assign` only. SWE then:
+Doorbell wakes on `assign`. Worker then:
 
 1. `team_inbox` → `launch_cursor` decision (`message_id`, assignment body)
 2. ONE `cursor_screen` with `slice=` in sidecar
@@ -34,25 +41,21 @@ Assign message stays in `processing` until step 4.
 
 ## Worker non-assign
 
-Pulse runs `bot-coms-board worker` for `report_only`, `cancel`, `report` on worker
-peers — handled in Python, no Cursor.
-
-PM: pulse runs `bot-coms worker` with `bot_coms.notify:source_argv` for
-`type=response` + notifiable `headers.source` (requires `BOT_COMS_NOTIFY_ARGV`).
-Board worker on PM handles `report` events first; the folded response is notify.
+Board worker handles `report_only`, `cancel`, `report` in Python (no Cursor).
+Pulse only reclaims stuck leases — disable cron job `b0tc0mspu15e`.
 
 ## Report
 
-`team_report` (slice, verdict, evidence) — or wake script stamps automatically.
+`team_report` (slice, verdict, evidence) — doorbells whoever assigned you.
 
 ## ASK self-slices
 
-Owning bot may register `[ASK]` scout slices. PM promotes to product `S*`.
+Owning bot may register `[ASK]` scout slices. Promote to product `S*` as needed.
 
 ## Fire-and-forget
 
 After `cursor_screen launch`, end the Hermes turn. Runner wake is report-only.
-PM: Discord-fold. Never `bot_coms_send` to `pm` on own wake.
+Never Discord `hermes send`. Never `bot_coms_send` to a hardcoded org parent.
 
 ## Context TTL
 

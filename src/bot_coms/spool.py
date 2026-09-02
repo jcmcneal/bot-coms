@@ -163,6 +163,9 @@ def send_message(
     inbox_path = enqueue_inbox(dest, env, config=config, clock=clock)
     write_outbox_receipt(sender, env, inbox_path, config=config, clock=clock)
     audit(sender, clock, "enqueued", file_mode=config.file_mode, msg_id=env.id, to=to)
+    from bot_coms.doorbell import after_enqueue
+
+    after_enqueue(env)
     return env
 
 

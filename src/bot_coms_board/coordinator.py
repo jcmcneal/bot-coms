@@ -132,15 +132,20 @@ class TeamCoordinator:
         title: str,
         assignment_path: str,
         from_profile: str = "project-manager",
+        from_peer: str | None = None,
         to_profile: str | None = None,
         tags: list[str] | None = None,
         intent: str = "assign",
         headers: dict[str, str] | None = None,
     ) -> AssignResult:
-        if to_profile is None:
-            from bot_coms_board.store import peer_to_profile
+        """Enqueue assign to ``to_peer``; return address is envelope ``from`` (FILO)."""
+        from bot_coms_board.store import peer_to_profile, profile_to_peer
 
+        if to_profile is None:
             to_profile = peer_to_profile(to_peer)
+        sender = (from_peer or os.environ.get("BOT_COMS_PEER_ID") or "").strip()
+        if not sender:
+            sender = profile_to_peer(from_profile)
         notify_source = _notify_source_from_headers(headers)
         row = self.register_slice(
             slice_id=slice_id,
@@ -154,7 +159,7 @@ class TeamCoordinator:
         )
         payload = SlicePayload(schema_version="1.0", intent=intent, slice=slice_id)
         idem = payload.idempotency_key(row.get("content_sha256"))
-        client = Client(self.spool_root, "pm")
+        client = Client(self.spool_root, sender)
         try:
             env = client.send(
                 to_peer,
@@ -162,7 +167,7 @@ class TeamCoordinator:
                 payload.to_dict(),
                 correlation_id=slice_id,
                 idempotency_key=idem,
-                reply_to="pm",
+                reply_to=sender,
                 headers=headers,
             )
         finally:
@@ -181,27 +186,38 @@ class TeamCoordinator:
         verdict: str | None = None,
         evidence: str | None = None,
         from_peer: str,
+        to_peer: str | None = None,
     ) -> dict[str, Any]:
+        """Report back to whoever assigned (return address), not a hardcoded PM."""
+        from bot_coms_board.store import profile_to_peer
+
         row = self.store.set_verdict(slice_id, verdict=verdict, evidence=evidence)
         if row is None:
             raise ValueError(f"slice not found: {slice_id}")
+        # FILO: report to the assigner's peer (from_profile → peer), not org chart.
+        return_peer = (to_peer or "").strip() or profile_to_peer(row.from_profile)
         payload = SlicePayload(schema_version="1.0", intent="report", slice=slice_id)
         idem = payload.idempotency_key(row.content_sha256)
         headers = _report_headers(row.notify_source)
         client = Client(self.spool_root, from_peer)
         try:
             env = client.send(
-                "pm",
+                return_peer,
                 "event",
                 payload.to_dict(),
                 correlation_id=slice_id,
                 idempotency_key=idem,
-                reply_to="pm",
+                reply_to=return_peer,
                 headers=headers,
             )
         finally:
             client.close()
-        return {"slice": slice_id, "row": row.to_dict(), "envelope_id": env.id}
+        return {
+            "slice": slice_id,
+            "row": row.to_dict(),
+            "envelope_id": env.id,
+            "to_peer": return_peer,
+        }
 
     def _resolve_slice_context(
         self, payload: SlicePayload, *, skip_digest: bool = False

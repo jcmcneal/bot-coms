@@ -54,6 +54,7 @@ def cmd_register(ns: argparse.Namespace) -> int:
 
 def cmd_assign(ns: argparse.Namespace) -> int:
     coord = _coord(ns)
+    from_peer = os.environ.get("BOT_COMS_PEER_ID", "").strip() or None
     try:
         result = coord.assign(
             slice_id=ns.slice,
@@ -61,7 +62,8 @@ def cmd_assign(ns: argparse.Namespace) -> int:
             title=ns.title,
             assignment_path=ns.assignment_path,
             from_profile=ns.from_profile,
-            to_profile=ns.to_profile,
+            from_peer=from_peer,
+            to_profile=ns.to_profile or None,
             tags=[t.strip() for t in ns.tags.split(",") if t.strip()] if ns.tags else None,
             intent=ns.intent,
             headers=resolve_assign_headers(None),

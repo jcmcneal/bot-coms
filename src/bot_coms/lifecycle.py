@@ -244,6 +244,9 @@ def write_result(
             root=dest.root,
             file_mode=config.file_mode,
         )
+    from bot_coms.doorbell import after_enqueue
+
+    after_enqueue(response)
     return response
 
 

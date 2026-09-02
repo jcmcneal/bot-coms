@@ -91,6 +91,17 @@ def peer_profile(peer_id: str) -> str:
     return _peer_profiles(peers_yaml_path()).get(peer_id, "")
 
 
+def profile_to_peer_id(profile: str) -> str:
+    """Reverse map Hermes profile → spool peer id (routing; not org chart)."""
+    profile = (profile or "").strip()
+    if not profile:
+        return ""
+    for peer_id, prof in _peer_profiles(peers_yaml_path()).items():
+        if prof == profile:
+            return peer_id
+    return ""
+
+
 def profile_env_path(profile: str) -> Path:
     return hermes_profiles_root() / profile / ".env"
 
