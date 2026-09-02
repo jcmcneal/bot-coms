@@ -14,7 +14,6 @@ import sys
 from pathlib import Path
 from typing import Any
 
-_MODES_SKIP = frozenset({"write"})
 _SESSION_RE = re.compile(r'"session_id"\s*:\s*"([^"]+)"')
 
 
@@ -127,11 +126,6 @@ def job_done(
         "mode": mode_norm or None,
         "action": "none",
     }
-
-    if mode_norm in _MODES_SKIP:
-        result["action"] = "skip_write"
-        _append_log(f"job-done skip mode=write job={job} profile={profile}")
-        return result
 
     tee = tee_path_for(job, sidecar, home=home)
     exit_code = parse_exit_code(tee)

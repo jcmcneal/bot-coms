@@ -111,12 +111,27 @@ def test_job_done_reports_any_roster_profile(job_env, monkeypatch) -> None:
     assert list((spool / "pm" / "inbox").glob("*.json"))
 
 
-def test_job_done_skip_write_mode(job_env) -> None:
+def test_job_done_reports_write_mode(job_env, monkeypatch) -> None:
     home, team_root, spool = job_env
+    monkeypatch.setenv("BOT_COMS_PEER_ID", "pm")
+    ctx = team_root / "context" / "S1.md"
+    ctx.parent.mkdir(parents=True)
+    ctx.write_text("write work\n", encoding="utf-8")
+    coord = TeamCoordinator(team_root=team_root, spool_root=spool)
+    coord.assign(
+        slice_id="S1",
+        to_peer="swe",
+        title="write-slice",
+        assignment_path=str(ctx),
+        from_peer="pm",
+    )
     _write_sidecar(home, "w1", profile="software-engineer", slice="S1", mode="write")
+    _write_tee(home, "w1", "0")
     out = job_done("w1", home=home, team_root=team_root, spool_root=spool)
-    assert out["action"] == "skip_write"
+    assert out["action"] == "report"
     assert out["success"] is True
+    assert out["verdict"] == "LANDED"
+    assert list((spool / "pm" / "inbox").glob("*.json"))
 
 
 def test_job_done_fail_exit(job_env, monkeypatch) -> None:
