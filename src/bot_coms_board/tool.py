@@ -9,6 +9,7 @@ from pathlib import Path
 from typing import Any, Optional
 
 from bot_coms_board.coordinator import default_spool_root
+from bot_coms_board.doc_write import write_doc
 from bot_coms_board.slice_status import merge_slice_view
 from bot_coms_board.store import open_store, profile_to_peer, team_root_from_env, utc_iso
 from bot_coms_board.payload import PayloadError, parse_payload, sha256_assignment_spec
@@ -19,11 +20,13 @@ _ACTIONS = frozenset(
         "status",
         "verdict",
         "log",
+        "write_doc",
         "slice",
         "list",
         "read",
     }
 )
+_WRITE_MODES = frozenset({"replace", "append", "upsert_section"})
 _STATUSES = frozenset(
     {
         "BACKLOG",
@@ -44,7 +47,9 @@ TEAM_BUS_SCHEMA = {
     "description": (
         "Team coordination ledger (~/.hermes/team/bus.sqlite). "
         "Register slices before bot-coms ping. Actions: register, status, verdict, "
-        "log, slice, list, read (alias list)."
+        "log, write_doc, slice, list, read (alias list). "
+        "write_doc: PM-only atomic writes to ~/.hermes/TEAM.md or "
+        "~/.hermes/team/STANDING.md — do not patch TEAM.md with Hermes file tools."
     ),
     "parameters": {
         "type": "object",
@@ -70,6 +75,20 @@ TEAM_BUS_SCHEMA = {
             "verdict": {"type": "string"},
             "evidence": {"type": "string"},
             "message": {"type": "string", "description": "log body (single line)"},
+            "path": {
+                "type": "string",
+                "description": "write_doc target (~/.hermes/TEAM.md or ~/.hermes/team/STANDING.md)",
+            },
+            "content": {"type": "string", "description": "write_doc body"},
+            "mode": {
+                "type": "string",
+                "enum": sorted(_WRITE_MODES),
+                "description": "write_doc: replace (default), append, or upsert_section (TEAM.md only)",
+            },
+            "section": {
+                "type": "string",
+                "description": "write_doc upsert_section: ## heading title (without hashes)",
+            },
             "active_job": {"type": "string"},
             "include_log": {"type": "integer"},
             "limit": {"type": "integer"},
@@ -218,6 +237,39 @@ def _action_log(args: dict, actor: str) -> str:
     return tool_result(action="log", entry=entry, actor=actor)
 
 
+def _action_write_doc(args: dict, actor: str) -> str:
+    if actor != "project-manager":
+        return _err("write_doc is PM-only", field="actor")
+    path = args.get("path")
+    content = args.get("content")
+    if not isinstance(path, str) or not path.strip():
+        return _err("write_doc requires path", field="path")
+    if not isinstance(content, str):
+        return _err("write_doc requires content", field="content")
+    mode = args.get("mode") or "replace"
+    if not isinstance(mode, str) or mode not in _WRITE_MODES:
+        return _err(
+            f"invalid mode: must be one of {sorted(_WRITE_MODES)}",
+            field="mode",
+        )
+    section = args.get("section")
+    try:
+        result = write_doc(
+            path=path.strip(),
+            content=content,
+            mode=mode,  # type: ignore[arg-type]
+            section=section if isinstance(section, str) else None,
+        )
+    except ValueError as exc:
+        field = "section" if "section" in str(exc) else "path"
+        if "mode" in str(exc):
+            field = "mode"
+        if "content" in str(exc):
+            field = "content"
+        return _err(str(exc), field=field)
+    return tool_result(action="write_doc", actor=actor, **result)
+
+
 def _action_slice(args: dict) -> str:
     sid, err = _validate_slice(args.get("slice"))
     if err:
@@ -274,6 +326,8 @@ def handle_team_bus(args: dict, **kw: Any) -> str:
         return _action_verdict(args, actor)
     if action == "log":
         return _action_log(args, actor)
+    if action == "write_doc":
+        return _action_write_doc(args, actor)
     if action == "slice":
         return _action_slice(args)
     if action == "list":

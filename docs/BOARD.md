@@ -42,7 +42,23 @@ dispatch as successful.
 | `team_assign` | PM | register + send (async, no wait) |
 | `team_inbox` | worker | claim + parse + slice + digest + dispatch |
 | `team_report` | worker | verdict + emit report |
-| `team_bus` | any | raw board CRUD |
+| `team_bus` | any | raw board CRUD; PM `write_doc` for TEAM.md / STANDING.md |
+
+## PM-owned docs (`team_bus write_doc`)
+
+Constitution and standing rules live in allowlisted paths only:
+
+| Doc | Path | Modes |
+|---|---|---|
+| Team constitution | `~/.hermes/TEAM.md` | `replace`, `append`, `upsert_section` |
+| Standing rules file | `~/.hermes/team/STANDING.md` | `replace`, `append` |
+
+**Do not** patch `TEAM.md` with Hermes `patch` / `write_file` — PM `HERMES_HOME` is
+under `profiles/project-manager`, so the authoritative-home skip does not apply and
+writes hit `protected_instruction_file`. Use `team_bus` `write_doc` instead.
+
+BUS operational notes stay on `team_bus` `log`. Slice assignment letters stay
+`write_file` under `team/context/<SLICE>.md` (already ungated).
 
 ## CLI
 

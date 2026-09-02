@@ -18,7 +18,7 @@ Contract: [`docs/BOARD.md`](../../docs/BOARD.md) in the bot-coms repo.
 | Role | Tool | When |
 |---|---|---|
 | PM | `team_assign` | dispatch slice (async, no wait) |
-| PM | `team_bus` | status, list, verdict, log, verify handle |
+| PM | `team_bus` | status, list, verdict, log, `write_doc` (TEAM.md / STANDING.md), verify handle |
 | Worker | `team_inbox` | on assign doorbell |
 | Worker | `bot_coms_ack` | after cursor launch + status stamp |
 | Worker | `team_report` | after runner wake |
@@ -29,7 +29,7 @@ on worker peers. PM notify: `bot-coms worker` + `source_argv` on terminal respon
 
 ## Loop
 
-1. PM writes `~/.hermes/team/context/<SLICE>.md`
+1. PM writes `~/.hermes/team/context/<SLICE>.md` (Hermes `write_file` — ungated)
 2. PM `team_assign` → end turn (no wait)
 3. PM receives `RUNNING` + `active_job` via notify (SWE ack fold-up)
 4. SWE: `team_inbox` → ONE `cursor_screen` → `team_bus status` → `bot_coms_ack`
@@ -48,6 +48,8 @@ Pulse: `assign` → wake only. Worker peers: `report_only`/`cancel`/`report` →
 - Never ACK RUNNING without `active_job`
 - Never launch verify Cursor job from a wake
 - Never print `.env` / tokens
+- Constitution / standing rules: `team_bus write_doc` on `~/.hermes/TEAM.md` or
+  `~/.hermes/team/STANDING.md` — never Hermes `patch` / `write_file` on TEAM.md
 - Product code: ask → plan → force in worktree (not main)
 
 ## References
