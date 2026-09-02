@@ -79,6 +79,18 @@ is_notifiable_response() {
   esac
 }
 
+stamp_pm_response_source() {
+  local mail="$1" peer="$2"
+  python3 -m bot_coms.headers stamp-response "$mail" "$peer" >/dev/null 2>&1 || return 1
+}
+
+heal_pm_response_source() {
+  local mail="$1" peer="$2"
+  is_notifiable_response "$mail" && return 0
+  stamp_pm_response_source "$mail" "$peer" || return 1
+  is_notifiable_response "$mail"
+}
+
 run_notify_worker() {
   local peer="$1"
   export BOT_COMS_SPOOL_ROOT="$ROOT"
@@ -150,7 +162,7 @@ for peer in "${peers[@]}"; do
   reclaim_peer "$peer"
 
   if [[ "$peer" == "pm" ]]; then
-    if is_notifiable_response "$mail"; then
+    if heal_pm_response_source "$mail" "$peer"; then
       run_notify_worker "$peer"
       continue
     fi
@@ -159,7 +171,7 @@ for peer in "${peers[@]}"; do
     fi
     "$BOARD" worker --peer "$peer" --idle-rounds 3 >/dev/null 2>&1 || true
     mail=$(find "$inbox" -maxdepth 1 -name '*.json' -type f 2>/dev/null | head -n 1)
-    if [[ -n "$mail" ]] && is_notifiable_response "$mail"; then
+    if [[ -n "$mail" ]] && heal_pm_response_source "$mail" "$peer"; then
       run_notify_worker "$peer"
     fi
     continue

@@ -3,16 +3,16 @@
 from __future__ import annotations
 
 import json
-import os
 import subprocess
 from typing import Any
 
-from bot_coms.headers import is_notifiable_source, source_from_headers
+from bot_coms.headers import default_source, is_notifiable_source, source_from_headers
+from bot_coms.profile_env import resolve_notify_argv_raw
 from bot_coms.types import ClaimedMessage, HandlerError, SkipMessage
 
 
 def notify_argv_from_env() -> list[str]:
-    raw = os.environ.get("BOT_COMS_NOTIFY_ARGV", "")
+    raw = resolve_notify_argv_raw()
     if not raw:
         raise RuntimeError("BOT_COMS_NOTIFY_ARGV is required for source_argv handler")
     data = json.loads(raw)
@@ -71,6 +71,8 @@ def source_argv(claimed: ClaimedMessage) -> dict[str, Any] | None:
     if env.type != "response":
         raise SkipMessage()
     source = source_from_headers(env.headers)
+    if not is_notifiable_source(source):
+        source = default_source()
     if not is_notifiable_source(source):
         return None
     run_notify_argv(notify_argv_from_env(), source, env.payload)

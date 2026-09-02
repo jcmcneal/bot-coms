@@ -325,6 +325,47 @@ class TestCoordinator:
         assert row is not None
         assert row.notify_source == "discord:1543040481368346765"
 
+    def test_cli_assign_stamps_default_source_from_profile_env(
+        self, coord_env, tmp_path, monkeypatch
+    ):
+        team_root, spool = coord_env
+        monkeypatch.delenv("BOT_COMS_DEFAULT_SOURCE", raising=False)
+        peers_yaml = team_root / "peers.yaml"
+        peers_yaml.write_text(
+            "peers:\n  - id: pm\n    profile: project-manager\n",
+            encoding="utf-8",
+        )
+        profile_env = tmp_path / ".hermes" / "profiles" / "project-manager" / ".env"
+        profile_env.parent.mkdir(parents=True)
+        profile_env.write_text(
+            "BOT_COMS_DEFAULT_SOURCE=discord:profile-file-only\n",
+            encoding="utf-8",
+        )
+        monkeypatch.setenv("BOT_COMS_PEERS_YAML", str(peers_yaml))
+        monkeypatch.setenv("HOME", str(tmp_path))
+        monkeypatch.setenv("BOT_COMS_PEER_ID", "pm")
+
+        ctx = team_root / "context" / "S16b.md"
+        ctx.parent.mkdir(parents=True)
+        ctx.write_text("work\n", encoding="utf-8")
+
+        coord = TeamCoordinator(team_root=team_root, spool_root=spool)
+        from bot_coms.headers import resolve_assign_headers
+
+        result = coord.assign(
+            slice_id="S16b",
+            to_peer="swe",
+            title="cli default file",
+            assignment_path=str(ctx),
+            headers=resolve_assign_headers(None, peer_id="pm"),
+        )
+        assert result.outbound_id
+        env = _read_inbox_envelope(spool, "swe")
+        assert env["headers"] == {"source": "discord:profile-file-only"}
+        row = coord.store.get_slice("S16b")
+        assert row is not None
+        assert row.notify_source == "discord:profile-file-only"
+
     def test_notify_path_response_with_source(self, coord_env, tmp_path, monkeypatch):
         team_root, spool = coord_env
         ctx = team_root / "context" / "S17.md"

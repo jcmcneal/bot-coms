@@ -1,7 +1,11 @@
 from __future__ import annotations
 
+import json
+from pathlib import Path
+
 from bot_coms.headers import (
     SOURCE_HEADER,
+    default_source,
     default_source_from_env,
     format_source,
     forward_headers,
@@ -9,6 +13,7 @@ from bot_coms.headers import (
     resolve_assign_headers,
     source_from_headers,
     source_platform,
+    stamp_response_default_source,
 )
 from bot_coms.types import Envelope
 
@@ -87,3 +92,59 @@ def test_resolve_assign_headers_falls_back_to_env(monkeypatch) -> None:
     monkeypatch.setenv("BOT_COMS_DEFAULT_SOURCE", "discord:99")
     out = resolve_assign_headers(None, session_source="")
     assert out == {"source": "discord:99"}
+
+
+def _write_profile_default_source(
+    tmp_path: Path,
+    monkeypatch,
+    *,
+    source: str = "discord:file-channel",
+) -> None:
+    team_root = tmp_path / "team"
+    team_root.mkdir()
+    peers_yaml = team_root / "peers.yaml"
+    peers_yaml.write_text(
+        "peers:\n  - id: pm\n    profile: project-manager\n",
+        encoding="utf-8",
+    )
+    profile_env = tmp_path / ".hermes" / "profiles" / "project-manager" / ".env"
+    profile_env.parent.mkdir(parents=True)
+    profile_env.write_text(f"BOT_COMS_DEFAULT_SOURCE={source}\n", encoding="utf-8")
+    monkeypatch.delenv("BOT_COMS_DEFAULT_SOURCE", raising=False)
+    monkeypatch.setenv("BOT_COMS_TEAM_ROOT", str(team_root))
+    monkeypatch.setenv("BOT_COMS_PEERS_YAML", str(peers_yaml))
+    monkeypatch.setenv("HOME", str(tmp_path))
+    monkeypatch.setenv("BOT_COMS_PEER_ID", "pm")
+
+
+def test_default_source_from_profile_env_file(tmp_path, monkeypatch) -> None:
+    _write_profile_default_source(tmp_path, monkeypatch)
+    assert default_source(peer_id="pm") == "discord:file-channel"
+    assert default_source_from_env() == "discord:file-channel"
+
+
+def test_resolve_assign_headers_falls_back_to_profile_env_file(tmp_path, monkeypatch) -> None:
+    _write_profile_default_source(tmp_path, monkeypatch)
+    out = resolve_assign_headers(None, session_source="", peer_id="pm")
+    assert out == {"source": "discord:file-channel"}
+
+
+def test_stamp_response_default_source_heals_headerless_response(tmp_path, monkeypatch) -> None:
+    _write_profile_default_source(tmp_path, monkeypatch, source="discord:healed")
+    mail = tmp_path / "pm-response.json"
+    mail.write_text(
+        json.dumps(
+            {
+                "schema_version": "1.0",
+                "id": "01HZZZZZZZZZZZZZZZZZZZZZZZ",
+                "type": "response",
+                "headers": None,
+                "payload": {"ok": True},
+            }
+        ),
+        encoding="utf-8",
+    )
+    assert stamp_response_default_source(mail, peer_id="pm") is True
+    data = json.loads(mail.read_text(encoding="utf-8"))
+    assert data["headers"] == {"source": "discord:healed"}
+    assert stamp_response_default_source(mail, peer_id="pm") is False

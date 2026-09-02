@@ -16,7 +16,7 @@ Env vars:
 | `BOT_COMS_SPOOL_ROOT` | Default `--root` |
 | `BOT_COMS_PEER_ID` | Default `--peer` / `--from` |
 | `BOT_COMS_TOKEN` | Allowlist token (never logged) |
-| `BOT_COMS_DEFAULT_SOURCE` | Default `headers.source` for cli/tui assigns (PM fold target) |
+| `BOT_COMS_DEFAULT_SOURCE` | Default `headers.source` for cli/tui assigns (PM fold target); falls back to `~/.hermes/team/.env` then `~/.hermes/profiles/<profile>/.env` from `peers.yaml` |
 | `BOT_COMS_NOTIFY_ARGV` | JSON argv for `bot_coms.notify:source_argv` (PM notify worker) |
 
 ## CLI smoke loopback

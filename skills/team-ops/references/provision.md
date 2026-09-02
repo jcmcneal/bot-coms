@@ -7,7 +7,7 @@ When adding or re-aligning a Hermes team bot.
 1. Jason approves role → update `team/ORG.md`
 2. Profile config: `team_bus` + `bot_coms` toolsets; plugins `bot-coms` + `bot-coms-board` + `cursor-screen` (if executor)
 3. Env: `BOT_COMS_SPOOL_ROOT`, `BOT_COMS_PEER_ID`
-4. PM only: `BOT_COMS_DEFAULT_SOURCE` (cli/tui assign fold target, e.g. `discord:<channel>`),
+4. PM only: `BOT_COMS_DEFAULT_SOURCE` (cli/tui assign fold target, e.g. `discord:<channel>`; may live in profile `.env` if Hermes does not export it),
    `BOT_COMS_NOTIFY_ARGV` (JSON argv array; see `adapters/hermes_bot_coms/README.md`)
 5. SOUL from `references/soul-templates/<posture>.md`
 6. `skills.external_dirs`: `/Users/jason/projects/bot-coms/skills`
