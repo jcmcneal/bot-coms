@@ -3,6 +3,7 @@
 from __future__ import annotations
 
 import json
+import re
 import sys
 from pathlib import Path
 
@@ -52,6 +53,59 @@ def format_source(platform: str, chat_id: str, thread_id: str = "") -> str:
         return f"{platform}:{chat_id}:{thread_id}"
     return f"{platform}:{chat_id}"
 
+_SNOWFLAKE_RE = re.compile(r"^\d{17,20}$")
+
+
+def discord_snowflake(token: str) -> str:
+    """Return token if it looks like a Discord snowflake, else empty."""
+    token = (token or "").strip()
+    return token if _SNOWFLAKE_RE.fullmatch(token) else ""
+
+
+def snowflake_from_session_key(session_key: str) -> str:
+    """Pull a Discord snowflake out of a gateway session key."""
+    parts = (session_key or "").split(":")
+    try:
+        idx = parts.index("discord")
+    except ValueError:
+        return ""
+    for part in parts[idx + 1 :]:
+        sf = discord_snowflake(part)
+        if sf:
+            return sf
+    return ""
+
+
+def normalize_source(source: str, *, session_key: str = "") -> str:
+    """Return a ``hermes send --to`` target. Discord channel names are not sendable."""
+    source = (source or "").strip()
+    platform = source_platform(source)
+    if platform != "discord":
+        return source
+    rest = source.split(":", 1)[1] if ":" in source else ""
+    for tok in rest.replace("/", ":").split(":"):
+        sf = discord_snowflake(tok.strip())
+        if sf:
+            return format_source("discord", sf)
+    sf = snowflake_from_session_key(session_key)
+    if sf:
+        return format_source("discord", sf)
+    return ""
+
+
+def session_source_from_env(getenv) -> str:
+    """Build source from Hermes session env. Prefer snowflake over chat name."""
+    platform = (getenv("HERMES_SESSION_PLATFORM", "") or "").strip().lower()
+    if platform in {"", "cli", "tui", "local"}:
+        return ""
+    chat_id = (getenv("HERMES_SESSION_CHAT_ID", "") or "").strip()
+    thread_id = (getenv("HERMES_SESSION_THREAD_ID", "") or "").strip()
+    key = (getenv("HERMES_SESSION_KEY", "") or "").strip()
+    if platform == "discord":
+        return normalize_source(format_source(platform, chat_id, thread_id), session_key=key)
+    return format_source(platform, chat_id, thread_id)
+
+
 
 def default_source(*, peer_id: str | None = None) -> str:
     """Fold/notify target from env, then profile or team dotenv files."""
@@ -75,6 +129,8 @@ def resolve_assign_headers(
     source = source_from_headers(out)
     if not source:
         source = (session_source or "").strip() or default_source(peer_id=peer_id)
+    if source_platform(source) == "discord":
+        source = normalize_source(source) or default_source(peer_id=peer_id)
     if not source:
         return headers
     out[SOURCE_HEADER] = source

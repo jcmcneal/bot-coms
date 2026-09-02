@@ -15,7 +15,7 @@ import subprocess
 from pathlib import Path
 from typing import Any, Callable
 
-from bot_coms.headers import is_notifiable_source, source_from_headers, source_platform
+from bot_coms.headers import is_notifiable_source, normalize_source, source_from_headers, source_platform
 from bot_coms.profile_env import peer_profile
 from bot_coms.types import Envelope
 
@@ -247,6 +247,9 @@ def _default_adapter(source: str, env: Envelope) -> None:
 
 def _default_gateway_send(profile: str, source: str, env: Envelope) -> None:
     """Relay terminal fold to messaging origin via ``hermes send --to``."""
+    source = normalize_source(source)
+    if not source:
+        return
     hermes = hermes_bin()
     msg = _adapter_message(env)
     if profile == "default":

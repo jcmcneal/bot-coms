@@ -148,3 +148,37 @@ def test_stamp_response_default_source_heals_headerless_response(tmp_path, monke
     data = json.loads(mail.read_text(encoding="utf-8"))
     assert data["headers"] == {"source": "discord:healed"}
     assert stamp_response_default_source(mail, peer_id="pm") is False
+
+
+def test_normalize_discord_channel_name_needs_session_key() -> None:
+    from bot_coms.headers import normalize_source
+
+    assert normalize_source("discord:Mora View/#grok-team") == ""
+    key = "agent:project-manager:discord:group:1543040481368346765"
+    assert (
+        normalize_source("discord:Mora View/#grok-team", session_key=key)
+        == "discord:1543040481368346765"
+    )
+
+
+def test_normalize_discord_already_snowflake() -> None:
+    from bot_coms.headers import normalize_source
+
+    assert normalize_source("discord:1543040481368346765") == "discord:1543040481368346765"
+
+
+def test_session_source_from_env_prefers_snowflake_over_name() -> None:
+    from bot_coms.headers import session_source_from_env
+
+    env = {
+        "HERMES_SESSION_PLATFORM": "discord",
+        "HERMES_SESSION_CHAT_ID": "Mora View/#grok-team",
+        "HERMES_SESSION_KEY": "agent:project-manager:discord:group:1543040481368346765",
+    }
+    assert session_source_from_env(lambda k, d="": env.get(k, d)) == "discord:1543040481368346765"
+
+
+def test_resolve_assign_headers_rewrites_discord_name(monkeypatch) -> None:
+    monkeypatch.setenv("BOT_COMS_DEFAULT_SOURCE", "discord:1543040481368346765")
+    out = resolve_assign_headers({"source": "discord:Mora View/#grok-team"})
+    assert out == {"source": "discord:1543040481368346765"}

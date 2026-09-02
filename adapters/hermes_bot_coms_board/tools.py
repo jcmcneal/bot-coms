@@ -7,7 +7,7 @@ import os
 from pathlib import Path
 from typing import Any
 
-from bot_coms.headers import format_source, resolve_assign_headers
+from bot_coms.headers import resolve_assign_headers
 from bot_coms_board.coordinator import TeamCoordinator, default_spool_root
 from bot_coms_board.tool import TEAM_BUS_SCHEMA, handle_team_bus
 
@@ -62,14 +62,11 @@ def _session_source() -> str:
         from gateway.session_context import get_session_env
     except ImportError:
         return ""
-    platform = (get_session_env("HERMES_SESSION_PLATFORM", "") or "").strip().lower()
-    if platform in {"", "cli", "tui", "local"}:
-        return ""
-    chat_id = (get_session_env("HERMES_SESSION_CHAT_ID", "") or "").strip()
-    if not chat_id:
-        return ""
-    thread_id = (get_session_env("HERMES_SESSION_THREAD_ID", "") or "").strip()
-    return format_source(platform, chat_id, thread_id)
+    from bot_coms.headers import session_source_from_env
+
+    return session_source_from_env(
+        lambda k, d="": get_session_env(k, d) or "",
+    )
 
 
 def _resolve_assign_headers(a: dict[str, Any]) -> dict[str, str] | None:
