@@ -20,7 +20,7 @@ from bot_coms.profile_env import peer_profile
 from bot_coms.types import Envelope
 
 # Platforms that ship via adapter scripts, not Hermes peer chat / Discord send.
-_OUT_OF_BAND_PLATFORMS = frozenset({"spm", "webhook", "grok", "grok-spm"})
+_OUT_OF_BAND_PLATFORMS = frozenset({"spm", "webhook", "grok", "grok-spm", "csa", "grok-csa"})
 
 _FALLBACK_PEER_PROFILES: dict[str, str] = {
     "pm": "project-manager",
@@ -134,6 +134,17 @@ def spm_ping_script() -> Path:
     return team_root() / "ping-spm.sh"
 
 
+def adapter_ping_script(source: str) -> Path:
+    """Return the operator ping script for an out-of-band source prefix."""
+    platform = source_platform(source)
+    if platform in {"csa", "grok-csa"}:
+        raw = os.environ.get("BOT_COMS_CSA_PING", "").strip()
+        if raw:
+            return Path(raw).expanduser()
+        return team_root() / "ping-csa.sh"
+    return spm_ping_script()
+
+
 def hermes_bin() -> str:
     return os.environ.get("HERMES_BIN", "").strip() or str(
         Path.home() / ".local" / "bin" / "hermes"
@@ -233,7 +244,7 @@ def _default_adapter(source: str, env: Envelope) -> None:
     platform = source_platform(source)
     if platform not in _OUT_OF_BAND_PLATFORMS:
         return
-    script = spm_ping_script()
+    script = adapter_ping_script(source)
     if not script.is_file():
         return
     msg = _adapter_message(env)

@@ -10,6 +10,7 @@ from __future__ import annotations
 import json
 import os
 import re
+import subprocess
 import sys
 from pathlib import Path
 from typing import Any
@@ -110,6 +111,57 @@ def _append_log(line: str) -> None:
         pass
 
 
+_PERSONAL_PROFILE_SOURCE = {
+    "cyber-security": "csa:csa",
+}
+
+
+def resolve_job_source(sidecar: dict[str, Any]) -> str:
+    """Sidecar source, then personal-profile default. No board required."""
+    for key in ("source", "notify"):
+        raw = str(sidecar.get(key) or "").strip()
+        if raw:
+            return raw
+    profile = str(sidecar.get("profile") or "").strip()
+    return _PERSONAL_PROFILE_SOURCE.get(profile, "")
+
+
+def _notify_personal(
+    *,
+    job: str,
+    sidecar: dict[str, Any],
+    exit_code: str,
+    mode: str,
+    evidence: str,
+) -> dict[str, Any] | None:
+    """Wake an out-of-band owner (CSA/SPM) when the job has no board slice."""
+    from bot_coms.doorbell import adapter_ping_script, is_out_of_band_source
+    from bot_coms.headers import source_platform
+
+    source = resolve_job_source(sidecar)
+    if not source:
+        return None
+    if not is_out_of_band_source(source) and source_platform(source) not in {"csa", "grok-csa"}:
+        return None
+    script = adapter_ping_script(source)
+    if not script.is_file():
+        return None
+    msg = f"{job} EXIT:{exit_code} mode={mode or '-'} {evidence}"
+    try:
+        subprocess.Popen(  # noqa: S603 — operator-owned adapter
+            [str(script), msg],
+            stdin=subprocess.DEVNULL,
+            stdout=subprocess.DEVNULL,
+            stderr=subprocess.DEVNULL,
+            start_new_session=True,
+        )
+    except OSError as exc:
+        _append_log(f"job-done personal-notify failed job={job}: {exc}")
+        return None
+    _append_log(f"job-done notify source={source} job={job} profile={sidecar.get('profile')}")
+    return {"action": "notify_adapter", "source": source, "script": str(script)}
+
+
 def job_done(
     job: str,
     *,
@@ -146,6 +198,16 @@ def job_done(
     result["evidence"] = evidence
 
     if not slice_id:
+        notified = _notify_personal(
+            job=job,
+            sidecar=sidecar,
+            exit_code=exit_code,
+            mode=mode_norm,
+            evidence=evidence,
+        )
+        if notified:
+            result.update(notified)
+            return result
         result["action"] = "skip_no_slice"
         _append_log(f"job-done skip no slice job={job} profile={profile}")
         return result

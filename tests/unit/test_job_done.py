@@ -185,3 +185,17 @@ def test_job_done_ask_mode_reports_without_landing(job_env, monkeypatch) -> None
     assert row is not None
     assert row.verdict == "ASK_DONE"
     assert row.status == "QUEUED"
+
+
+def test_job_done_personal_csa_notify(job_env, monkeypatch, tmp_path) -> None:
+    home, team_root, spool = job_env
+    ping = tmp_path / "ping-csa.sh"
+    ping.write_text("#!/bin/sh\necho ok\n", encoding="utf-8")
+    ping.chmod(0o755)
+    monkeypatch.setenv("BOT_COMS_CSA_PING", str(ping))
+    _write_sidecar(home, "cs-lay-of-land", profile="cyber-security", mode="ask")
+    _write_tee(home, "cs-lay-of-land", "0")
+    out = job_done("cs-lay-of-land", home=home, team_root=team_root, spool_root=spool)
+    assert out["action"] == "notify_adapter"
+    assert out["source"] == "csa:csa"
+    assert list((spool / "pm" / "inbox").glob("*.json")) == []
