@@ -17,7 +17,7 @@ Contract: [`docs/BOARD.md`](../../docs/BOARD.md) in the bot-coms repo.
 
 | Role | Tool | When |
 |---|---|---|
-| Assigner | `team_assign` | dispatch slice (async, no wait) → doorbell `to` |
+| Assigner | `team_assign` | Hermes only. Dispatch slice or mid-task question (async, no wait). Never from Cursor. |
 | Any | `team_bus` | status, list, verdict, log, `write_doc` (TEAM.md / STANDING.md), verify handle |
 | Worker | `team_inbox` | on assign doorbell |
 | Worker | `bot_coms_ack` | after cursor launch + status stamp (RUNNING = no wake) |
@@ -53,7 +53,21 @@ control plane — disable it; pulse is a stuck-lease stub only.
 - Never look up org chart / `ORG.md` / roster for parent — use envelope `from`
 - Constitution / standing rules: `team_bus write_doc` on `~/.hermes/TEAM.md` or
   `~/.hermes/team/STANDING.md` — never Hermes `patch` / `write_file` on TEAM.md
-- Product code: ask → plan → force in worktree (not main)
+- Product code: one Cursor session, investigate → plan → implement in a worktree (not main). Not ask-then-respawn.
+- No synchronous `ask_team`. Cursor questions are PAUSED: Hermes `team_assign`s async, then resumes the same session.
+
+## Mid-task questions (Cursor)
+
+If Cursor needs peer guidance mid-slice:
+
+1. Treat the job as **PAUSED** (not terminal, not blocked).
+2. Hermes `team_assign`s the question to PM or the relevant peer — fire-and-forget.
+3. Keep unblocked work moving. Do not sit in a wait loop.
+4. When the answer arrives, resume the **same** Cursor session with that answer.
+5. Unattended in-Cursor question prompts are auto-skipped — do not rely on them.
+6. Escalate to Jason only after peer/fallback routes, and only for a real decision.
+
+`team_assign` is Hermes-to-Hermes. Cursor never calls it.
 
 ## References
 

@@ -127,6 +127,14 @@ Worker assign completion:
 3. `team_bus status` → `RUNNING` + `active_job`
 4. `bot_coms_ack` with `{intent: ack, slice, status: RUNNING}` (no wake)
 
+## Mid-task questions
+
+`team_assign` is Hermes-to-Hermes (async). Cursor never calls it. There is no
+synchronous `ask_team`. One Cursor session per slice through investigate →
+plan → implement. A Cursor question is **PAUSED**: Hermes assigns the question
+async, keeps unblocked work, resumes the same session. Unattended Cursor
+question prompts are auto-skipped. No nested waits.
+
 ## Envelope headers
 
 - `correlation_id` = slice id

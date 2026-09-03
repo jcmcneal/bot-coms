@@ -2,13 +2,21 @@
 
 Machine: Jasons-iMac. Use **`cursor_screen`** tool (plugin: hermes-team-ops).
 
-## Stage gate
+## One session
 
-```
-unknown → ask → plan → force (product worktree only)
-```
+Investigate → plan → implement in **one** Cursor session (worktree, not main).
+Do not ask/plan then respawn. UX `write` may use `~/projects` (`write_roots`).
+`force` stays approval-gated for product execute.
 
-Coordination: `team_bus` / `team_report` — never Cursor.
+Coordination (`team_assign`, `team_bus`, `team_report`) is Hermes-only — never
+from inside Cursor. No synchronous `ask_team`.
+
+## Mid-task questions
+
+Cursor question / needs peer = **PAUSED**, not LANDED/FAIL/BLOCKED.
+Hermes `team_assign`s the question async, keeps unblocked work, resumes the
+**same** session with the answer. Unattended Cursor question prompts are
+auto-skipped. Do not rely on them.
 
 ## After launch
 

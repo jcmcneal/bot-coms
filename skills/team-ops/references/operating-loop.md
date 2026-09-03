@@ -63,3 +63,16 @@ hardcoded org parent.
 ## Context TTL
 
 14d grace → archive; 90d purge. Script: `bus-context-prune.sh`.
+
+## Mid-task questions
+
+`team_assign` is Hermes-only. Cursor does not call it. There is no `ask_team`.
+
+One Cursor session per slice: investigate → plan → implement. Do not respawn
+to change phase.
+
+If Cursor returns a question: **PAUSED**, not terminal. Hermes `team_assign`s
+the question async to PM or the peer, keeps unblocked work, then resumes the
+same Cursor session with the answer. Unattended Cursor question prompts are
+auto-skipped. No nested waits. Jason only after peer/fallback, and only for
+a genuine decision.
