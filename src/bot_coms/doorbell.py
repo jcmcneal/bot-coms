@@ -175,7 +175,8 @@ def build_wake_query(env: Envelope) -> str:
             f"Slice {slice_id} assigned.\n"
             f"Assignment: {assignment_path}\n\n"
             f"{body}\n\n"
-            "Call team_inbox, then launch ONE cursor_screen job for this slice.\n"
+            "Call team_inbox, then launch ONE agent_screen job for this slice "
+            "(backend from profile agent_screen.default_backend).\n"
             "Stamp team_bus status RUNNING with active_job, then bot_coms_ack. "
             "End turn after launch.\n"
         )

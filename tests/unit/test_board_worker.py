@@ -130,5 +130,5 @@ class TestBoardWorker:
         row = coord.store.get_slice("S9")
         assert row is not None
         assert row.status == "QUEUED"
-        assert decision.disposition == "launch_cursor"
+        assert decision.disposition == "launch_agent"
         assert decision.handled is False

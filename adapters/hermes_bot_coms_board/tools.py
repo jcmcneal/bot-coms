@@ -112,8 +112,8 @@ TEAM_INBOX_SCHEMA = {
     "description": (
         "Process bot-coms inbox for this peer: claim, validate payload, join SQL, "
         "verify digest, auto-handle report_only/cancel/fail. Returns dispatch "
-        "decisions (assign → launch_cursor bundle). Assign stays claimed until "
-        "bot_coms_ack after cursor_screen + team_bus status."
+        "decisions (assign → launch_agent bundle). Assign stays claimed until "
+        "bot_coms_ack after agent_screen + team_bus status."
     ),
     "parameters": {
         "type": "object",

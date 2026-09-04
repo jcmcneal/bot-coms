@@ -109,7 +109,7 @@ class TestCoordinator:
         result = coord.process_inbox("swe", auto_handle=False, auto_handle_intents=frozenset({"report_only"}))
         assert len(result.decisions) == 1
         d = result.decisions[0]
-        assert d.disposition == "launch_cursor"
+        assert d.disposition == "launch_agent"
         assert d.handled is False
         assert "work" in (d.assignment_body or "")
         assert list((spool / "swe" / "acked").glob("*.json")) == []

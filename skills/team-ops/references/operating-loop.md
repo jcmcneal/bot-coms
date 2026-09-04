@@ -33,8 +33,8 @@ Env: `BOT_COMS_SPOOL_ROOT`, `BOT_COMS_PEER_ID`. Optional peer↔profile map in
 
 Doorbell wakes on `assign`. Worker then:
 
-1. `team_inbox` → `launch_cursor` decision (`message_id`, assignment body)
-2. ONE `cursor_screen` with `slice=` in sidecar
+1. `team_inbox` → `launch_agent` decision (`message_id`, assignment body)
+2. ONE `agent_screen` with `slice=` in sidecar (backend from profile config)
 3. `team_bus` `status` → `RUNNING` + `active_job`
 4. `bot_coms_ack` (id = `message_id`, result = `{intent: ack, slice, status: RUNNING}`)
 
@@ -42,7 +42,7 @@ Assign message stays in `processing` until step 4.
 
 ## Worker non-assign
 
-Board worker handles `report_only`, `cancel`, `report` in Python (no Cursor).
+Board worker handles `report_only`, `cancel`, `report` in Python (no coding agent).
 Pulse only reclaims stuck leases — disable cron job `b0tc0mspu15e`.
 
 ## Report
@@ -55,7 +55,7 @@ Owning bot may register `[ASK]` scout slices. Promote to product `S*` as needed.
 
 ## Fire-and-forget
 
-After `cursor_screen launch`, end the Hermes turn. Runner EXIT calls
+After `agent_screen launch`, end the Hermes turn. Runner EXIT calls
 `bot-coms job-done` (sidecar + `peers.yaml`) for whoever launched the job.
 Discord origin returns via `hermes send --to`. Never `bot_coms_send` to a
 hardcoded org parent.
@@ -66,13 +66,12 @@ hardcoded org parent.
 
 ## Mid-task questions
 
-`team_assign` is Hermes-only. Cursor does not call it. There is no `ask_team`.
+`team_assign` is Hermes-only. The coding agent does not call it. There is no `ask_team`.
 
-One Cursor session per slice: investigate → plan → implement. Do not respawn
+One agent session per slice: investigate → plan → implement. Do not respawn
 to change phase.
 
-If Cursor returns a question: **PAUSED**, not terminal. Hermes `team_assign`s
+If the agent returns a question: **PAUSED**, not terminal. Hermes `team_assign`s
 the question async to PM or the peer, keeps unblocked work, then resumes the
-same Cursor session with the answer. Unattended Cursor question prompts are
-auto-skipped. No nested waits. Jason only after peer/fallback, and only for
-a genuine decision.
+same session with `session_id`. Unattended question prompts are auto-skipped.
+No nested waits. Jason only after peer/fallback, and only for a genuine decision.

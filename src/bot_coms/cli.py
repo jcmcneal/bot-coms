@@ -188,7 +188,7 @@ def cmd_smoke(ns: argparse.Namespace) -> int:
 
 
 def cmd_job_done(ns: argparse.Namespace) -> int:
-    """Cursor EXIT callback: sidecar + peers.yaml → team_report (no allowlist).
+    """Agent EXIT callback: sidecar + peers.yaml → team_report (no allowlist).
 
     Loads ``bot_coms_board.job_done`` via importlib so the transport package
     never statically imports the board (import-boundary test).
@@ -290,9 +290,9 @@ def build_parser() -> argparse.ArgumentParser:
 
     job_done_p = sub.add_parser(
         "job-done",
-        help="Cursor EXIT → report via peers.yaml (sidecar ~/.hermes/cursor-screen/<job>.json)",
+        help="Agent EXIT → report via peers.yaml (sidecar ~/.hermes/agent-screen/<job>.json)",
     )
-    job_done_p.add_argument("job", help="cursor_screen job id")
+    job_done_p.add_argument("job", help="agent_screen job id")
     job_done_p.set_defaults(func=cmd_job_done)
     return p
 

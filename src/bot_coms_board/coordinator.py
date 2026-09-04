@@ -460,7 +460,7 @@ class TeamCoordinator:
                 message_id=msg_id,
                 slice_id=payload.slice,
                 intent=payload.intent,
-                disposition="launch_cursor",
+                disposition="launch_agent",
                 slice_row=row_dict,
                 assignment_path=row_dict["assignment_path"],
                 assignment_body=body,

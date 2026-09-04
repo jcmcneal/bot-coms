@@ -24,8 +24,8 @@ Env vars:
 
 ## Post-install cleanup
 
-`wake-cli-job.sh` is retired. Cursor EXIT calls `bot-coms job-done` from the
-`cursor_screen` runner. Remove any leftover install copy:
+`wake-cli-job.sh` is retired. Agent EXIT calls `bot-coms job-done` from the
+`agent_screen` runner. Remove any leftover install copy:
 
 ```bash
 rm -f ~/.hermes/scripts/wake-cli-job.sh

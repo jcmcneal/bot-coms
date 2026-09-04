@@ -1,8 +1,8 @@
-"""Cursor EXIT → team report (bot-coms owns job-done; no role allowlist).
+"""Coding-agent EXIT → team report (bot-coms owns job-done; no role allowlist).
 
-Reads ``~/.hermes/cursor-screen/<job>.json``, maps Hermes profile → spool peer
-via ``peers.yaml``, stamps a mode-aware verdict from the tee ``EXIT:`` line, and enqueues
-``team_report`` to the assigner's return address.
+Reads ``~/.hermes/agent-screen/<job>.json``, maps Hermes profile → spool peer
+via ``peers.yaml``, stamps a mode-aware verdict from the tee ``EXIT:`` line, and
+enqueues ``team_report`` to the assigner's return address.
 """
 
 from __future__ import annotations
@@ -24,7 +24,7 @@ def hermes_home(home: Path | None = None) -> Path:
 
 
 def sidecar_path(job: str, *, home: Path | None = None) -> Path:
-    return hermes_home(home) / ".hermes" / "cursor-screen" / f"{job}.json"
+    return hermes_home(home) / ".hermes" / "agent-screen" / f"{job}.json"
 
 
 def tee_path_for(job: str, sidecar: dict[str, Any], *, home: Path | None = None) -> Path:
@@ -45,7 +45,7 @@ def read_sidecar(job: str, *, home: Path | None = None) -> dict[str, Any]:
 
 
 def parse_exit_code(tee: Path) -> str:
-    """Last ``EXIT:<code>`` line from the Cursor tee, or ``unknown``."""
+    """Last ``EXIT:<code>`` line from the agent tee, or ``unknown``."""
     if not tee.is_file():
         return "unknown"
     try:
@@ -71,7 +71,7 @@ def parse_session_id(tee: Path) -> str:
 
 
 def verdict_for_exit(exit_code: str, mode: str = "") -> str:
-    """Map Cursor EXIT + launch mode to a board verdict.
+    """Map coding-agent EXIT + launch mode to a board verdict.
 
     Ask/plan EXIT:0 is a real job-done when that is all the letter asked.
     It is ASK_DONE / PLAN_DONE, not LANDED — LANDED means execute finished.
@@ -170,7 +170,7 @@ def job_done(
     team_root: Path | None = None,
     spool_root: Path | None = None,
 ) -> dict[str, Any]:
-    """Stamp report for a finished cursor_screen job. Returns a result dict."""
+    """Stamp report for a finished agent_screen job. Returns a result dict."""
     job = (job or "").strip()
     if not job:
         raise ValueError("job id required")

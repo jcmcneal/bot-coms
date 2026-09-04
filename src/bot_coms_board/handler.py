@@ -46,7 +46,7 @@ def make_team_handler(
         finally:
             client.close()
 
-        if decision.disposition == "launch_cursor":
+        if decision.disposition == "launch_agent":
             raise SkipMessage()
         return decision.ack_result if decision.handled else None
 
@@ -86,6 +86,7 @@ def build_assign_wake_query(
         f"Slice {slice_id} assigned.\n"
         f"Assignment: {assignment_path}\n\n"
         f"{preview}\n\n"
-        "Call team_inbox, then launch ONE cursor_screen job for this slice. "
+        "Call team_inbox, then launch ONE agent_screen job for this slice "
+        "(backend from profile agent_screen.default_backend). "
         "Stamp team_bus status RUNNING with active_job, then bot_coms_ack. End turn after launch."
     )

@@ -27,8 +27,8 @@ Doorbell after a successful spool put:
 | RUNNING-only `ack` (incl. `type=response` + `status=RUNNING` with missing intent) | stamp SQL only — **no** wake |
 | Out-of-band `headers.source` (`spm:…`, webhook, …) | matching adapter (e.g. `~/.hermes/team/ping-spm.sh`) |
 
-Cursor EXIT (`hermes-team-ops` `cursor_screen` runner) calls
-`bot-coms job-done <job>` directly: sidecar `~/.hermes/cursor-screen/<job>.json`
+Agent EXIT (`hermes-team-ops` `agent_screen` runner) calls
+`bot-coms job-done <job>` directly: sidecar `~/.hermes/agent-screen/<job>.json`
 + `peers.yaml` profile→peer map → `team_report`. No role allowlist. No
 `wake-cli-job.sh` (install removes any live `~/.hermes/scripts/wake-cli-job.sh`).
 
@@ -62,7 +62,7 @@ Only three keys: `schema_version`, `intent`, `slice`. Metadata lives in SQL at
 | intent | Sender | Receiver action |
 |---|---|---|
 | `assign` | any peer | fire-and-forget; assignee inbox → launch → stamp handle → ack RUNNING |
-| `report_only` | assigner | read context → ACK verdict → **no Cursor** |
+| `report_only` | assigner | read context → ACK verdict → **no coding agent** |
 | `report` | worker | completion doorbell to **return address** (`from` / assigner peer) |
 | `cancel` | assigner | ACK cancelled |
 
@@ -118,22 +118,22 @@ Pulse is **not** required to drain the inbox.
 ## Worker receive
 
 Doorbell wakes Hermes for `assign` (and other non-RUNNING mail). Board worker
-handles `report_only` / `cancel` / `report` in Python (no Cursor).
+handles `report_only` / `cancel` / `report` in Python (no coding agent).
 
 Worker assign completion:
 
-1. `team_inbox` → `launch_cursor` bundle (message stays claimed until ack)
-2. ONE `cursor_screen` with `slice=` in sidecar
+1. `team_inbox` → `launch_agent` bundle (message stays claimed until ack)
+2. ONE `agent_screen` with `slice=` in sidecar
 3. `team_bus status` → `RUNNING` + `active_job`
 4. `bot_coms_ack` with `{intent: ack, slice, status: RUNNING}` (no wake)
 
 ## Mid-task questions
 
-`team_assign` is Hermes-to-Hermes (async). Cursor never calls it. There is no
-synchronous `ask_team`. One Cursor session per slice through investigate →
-plan → implement. A Cursor question is **PAUSED**: Hermes assigns the question
-async, keeps unblocked work, resumes the same session. Unattended Cursor
-question prompts are auto-skipped. No nested waits.
+`team_assign` is Hermes-to-Hermes (async). The coding agent never calls it. There
+is no synchronous `ask_team`. One agent session per slice through investigate →
+plan → implement. An agent question is **PAUSED**: Hermes assigns the question
+async, keeps unblocked work, resumes the same session via `session_id`.
+Unattended question prompts are auto-skipped. No nested waits.
 
 ## Envelope headers
 

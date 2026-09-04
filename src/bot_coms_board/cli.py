@@ -270,9 +270,9 @@ def main(argv: list[str] | None = None) -> int:
 
     p = sub.add_parser(
         "job-done",
-        help="Cursor EXIT → report via peers.yaml (sidecar ~/.hermes/cursor-screen/<job>.json)",
+        help="Agent EXIT → report via peers.yaml (sidecar ~/.hermes/agent-screen/<job>.json)",
     )
-    p.add_argument("job", help="cursor_screen job id")
+    p.add_argument("job", help="agent_screen job id")
     p.set_defaults(func=cmd_job_done)
 
     ns = parser.parse_args(argv)
