@@ -258,22 +258,46 @@ def _default_adapter(source: str, env: Envelope) -> None:
 
 
 def _default_gateway_send(profile: str, source: str, env: Envelope) -> None:
-    """Relay terminal fold to messaging origin via ``hermes send --to``."""
+    """Relay terminal fold to messaging origin via ``hermes send --to``.
+
+    Tries the destination peer profile first, then falls back to default
+    Hermes home creds. Profile ``.env`` files often omit ``DISCORD_BOT_TOKEN``
+    even when the gateway session works — never swallow that failure.
+    """
     source = normalize_source(source)
     if not source:
         return
     hermes = hermes_bin()
     msg = _adapter_message(env)
-    if profile == "default":
-        cmd = [hermes, "send", "--to", source, msg]
-    else:
-        cmd = [hermes, "-p", profile, "send", "--to", source, msg]
-    subprocess.Popen(  # noqa: S603 — operator-configured hermes path
-        cmd,
-        stdout=subprocess.DEVNULL,
-        stderr=subprocess.DEVNULL,
-        start_new_session=True,
-    )
+    cmds: list[list[str]] = []
+    if profile and profile != "default":
+        cmds.append([hermes, "-p", profile, "send", "--to", source, "--quiet", msg])
+    cmds.append([hermes, "send", "--to", source, "--quiet", msg])
+    last_err = ""
+    for cmd in cmds:
+        try:
+            proc = subprocess.run(  # noqa: S603 — operator-configured hermes path
+                cmd,
+                capture_output=True,
+                text=True,
+                timeout=60,
+                check=False,
+            )
+        except (OSError, subprocess.TimeoutExpired) as exc:
+            last_err = str(exc)
+            continue
+        if proc.returncode == 0:
+            return
+        last_err = (proc.stderr or proc.stdout or f"exit {proc.returncode}").strip()
+    try:
+        log = Path("/tmp/cli-stop-hook.log")
+        with log.open("a", encoding="utf-8") as fh:
+            fh.write(
+                f"doorbell gateway-send failed source={source} profile={profile} "
+                f"msg={msg!r} err={last_err}\n"
+            )
+    except OSError:
+        return
 
 
 def ring(env: Envelope) -> None:
