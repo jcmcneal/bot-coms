@@ -11,6 +11,7 @@ from typing import Any
 SCHEMA_VERSION = "1.0"
 
 INTENTS = frozenset({"assign", "report_only", "report", "cancel"})
+RECEIPT_INTENTS = frozenset({"ack", "fail"})
 
 _SLICE_RE = re.compile(r"^[A-Za-z0-9][A-Za-z0-9_-]{0,63}$")
 

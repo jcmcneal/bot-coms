@@ -219,6 +219,42 @@ class TestCoordinator:
         ]
         assert fail_responses == []
 
+    def test_report_only_reads_expected_assignment_prose_update(self, coord_env):
+        team_root, spool = coord_env
+        ctx = team_root / "context" / "S11b.md"
+        ctx.parent.mkdir(parents=True)
+        ctx.write_text("Initial assignment\n", encoding="utf-8")
+        digest = _digest(ctx)
+
+        coord = TeamCoordinator(team_root=team_root, spool_root=spool)
+        coord.register_slice(
+            slice_id="S11b",
+            title="context update",
+            assignment_path=str(ctx),
+            to_profile="software-engineer",
+            from_profile="project-manager",
+            peer="swe",
+        )
+        ctx.write_text("Initial assignment\n\nApproved scope update\n", encoding="utf-8")
+
+        payload = SlicePayload(schema_version="1.0", intent="report_only", slice="S11b")
+        pm = Client(spool, "pm")
+        pm.send(
+            "swe",
+            "event",
+            payload.to_dict(),
+            correlation_id="S11b",
+            idempotency_key=payload.idempotency_key(digest),
+            reply_to="pm",
+        )
+        pm.close()
+
+        result = coord.process_inbox("swe", limit=1)
+        decision = result.decisions[0]
+        assert decision.disposition == "report_only_complete"
+        assert decision.error_code is None
+        assert "Approved scope update" in (decision.assignment_body or "")
+
     def test_assign_stamps_headers_and_notify_source(self, coord_env):
         team_root, spool = coord_env
         ctx = team_root / "context" / "S12.md"
@@ -382,7 +418,7 @@ class TestCoordinator:
             coord.workflow('accept',actor='pm',slice_id='S17',revision=1,evidence='Accepted: checks passed, artifact reviewed')
         assert sent==[('discord:channel-notify',{'intent':'ack','slice':'S17','verdict':'ACCEPTED','evidence':'Accepted: checks passed, artifact reviewed'})]
 
-    def test_relay_failure_notifies_pm_with_source(self, coord_env):
+    def test_stale_assign_failure_notifies_pm_with_source(self, coord_env):
         team_root, spool = coord_env
         ctx = team_root / "context" / "S14.md"
         ctx.parent.mkdir(parents=True)
@@ -401,10 +437,10 @@ class TestCoordinator:
         )
         ctx.write_text("## Assignment\nTAMPERED\n\n## Notes\n", encoding="utf-8")
 
-        payload = SlicePayload(schema_version="1.0", intent="report_only", slice="S14")
-        swe = Client(spool, "swe")
-        swe.send(
-            "pm",
+        payload = SlicePayload(schema_version="1.0", intent="assign", slice="S14")
+        pm = Client(spool, "pm")
+        pm.send(
+            "swe",
             "event",
             payload.to_dict(),
             correlation_id="S14",
@@ -412,15 +448,15 @@ class TestCoordinator:
             reply_to="pm",
             headers={"source": "discord:channel-fail"},
         )
-        swe.close()
+        pm.close()
 
-        result = coord.process_inbox("pm", limit=1)
+        result = coord.process_inbox("swe", limit=1)
         assert len(result.decisions) == 1
         d = result.decisions[0]
         assert d.disposition == "fail"
         assert d.error_code == "STALE_ASSIGNMENT"
 
-        result_env = read_json(spool / "pm" / "results" / "S14.json")
+        result_env = read_json(spool / "swe" / "results" / "S14.json")
         assert result_env["headers"] == {"source": "discord:channel-fail"}
         assert result_env["payload"]["intent"] == "fail"
         assert result_env["payload"]["code"] == "STALE_ASSIGNMENT"

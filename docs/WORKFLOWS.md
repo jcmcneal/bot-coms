@@ -50,7 +50,15 @@ On a wake, call `team_inbox`. `coordinate` means perform coordination in Hermes;
 resumable agent session per slice. After launch, stamp `RUNNING` with `active_job`,
 then `bot_coms_ack` using the returned `message_id` and `lease_token`. Coordination
 may acknowledge receipt and remain QUEUED until it has a result; do not invent an
-agent handle for it. ACK responses are receipts, not new work or outward reports.
+agent handle for it. ACK and failure payloads are terminal receipts, not new work
+or outward reports, even if an adapter mislabeled the envelope type.
+
+The assignment content digest is checked when dispatching `assign`. A
+`report_only` status/context refresh reads the current context file without a stale
+digest failure and does not launch work or amend the frozen contract. Changed work
+still requires a new slice or explicit reassignment. Send an in-scope context
+refresh as `report_only`; custom command intents such as `scope_update` remain
+invalid.
 
 The runner records `EXECUTED`, `ASK_DONE`, `PLAN_DONE`, `ERROR` or `UNKNOWN`.
 Exit 0 proves process completion only. The worker reads the result and calls
