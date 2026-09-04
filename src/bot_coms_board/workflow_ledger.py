@@ -41,6 +41,8 @@ class WorkflowLedger:
         cursor = self._conn.execute('INSERT INTO workflow_events(slice_id,kind,actor,details,at) VALUES (?,?,?,?,?)',
                            (slice_id, kind, actor, json.dumps(details), now.isoformat()))
         row, c = self._workflow_row(slice_id)
+        if kind not in {'assigned', 'reassignment', 'submission', 'execution', 'review', 'acceptance'}:
+            return
         intent = c.get('intent', 'assign') if kind == 'assigned' else 'assign' if kind == 'reassignment' else 'report'
         recipients = {row['peer']} if kind in ('assigned', 'reassignment') else {c['return_peer']}
         if kind == 'submission':

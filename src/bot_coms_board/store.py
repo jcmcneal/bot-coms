@@ -382,6 +382,14 @@ class BusStore(WorkflowLedger):
                     raise ValueError('use workflow acceptance; accepted work is immutable')
                 if status == 'RUNNING' and not (active_job or current['active_job']):
                     raise ValueError('RUNNING requires active_job; use QUEUED for coordination')
+                if status == 'RUNNING' and active_job and active_job != current['active_job']:
+                    contract = json.loads(current['contract'])
+                    if contract.get('submission'):
+                        contract['revision'] += 1
+                        contract['submission'] = None
+                        self._save_contract(slice_id, contract)
+                        self._workflow_event(slice_id, 'execution_started', current['peer'],
+                                             {'job':active_job, 'revision':contract['revision']})
             if status in {'PAUSED', 'CANCELLED', 'BLOCKED'}:
                 clear_active_job = True
             if clear_active_job:

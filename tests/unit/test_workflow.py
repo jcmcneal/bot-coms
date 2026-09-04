@@ -283,3 +283,14 @@ def test_new_assignment_cannot_choose_itself_as_parent(loop):
     c,_=loop
     with pytest.raises(ValueError,match='parent'):assign(c,parent_slice='S1')
     assert c.store.get_slice('S1') is None
+
+
+def test_new_execution_invalidates_previous_submission_and_approvals(loop):
+    c,_=loop;assign(c);submit(c);approve(c)
+    c.store.set_status('S1','RUNNING',active_job='new-attempt')
+    c.report(slice_id='S1',from_peer='builder',verdict='EXECUTED',evidence='exit=0',job='new-attempt')
+    row=c.store.get_slice('S1')
+    assert row.contract['submission'] is None
+    with pytest.raises(ValueError):accept(c,revision=row.contract['revision'])
+    submit(c,evidence='new build and checks')
+    with pytest.raises(ValueError,match='reviews'):accept(c,revision=3)
