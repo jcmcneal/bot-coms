@@ -53,6 +53,8 @@ See `docs/INSTALL.md` and `adapters/hermes_bot_coms/README.md`. Enablement is a 
 
 ## Docs
 
+- [Team documents](docs/team/README.md) — shared policy, local settings templates and daily prune
+- [Provision a Hermes teammate](skills/team-ops/references/provision.md) — fresh profiles, shared policy and capability registration
 - [`docs/PROTOCOL.md`](docs/PROTOCOL.md) — normative envelope, layout, and lifecycle
 - [`docs/NON_GOALS.md`](docs/NON_GOALS.md)
 - [`docs/INSTALL.md`](docs/INSTALL.md)

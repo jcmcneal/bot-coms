@@ -29,10 +29,11 @@ RUNNING requires an actual job handle for contracted work. PAUSED preserves the
 resumable session in its sidecar while clearing active execution. Cancel stops
 queued dispatch; it refuses active jobs until their owner pauses/stops them.
 
-## Instruction documents
+## Local instruction overrides
 
 `team_bus write_doc` retains the existing document-edit permissions and allowlist:
 `~/.hermes/TEAM.md` supports replace/append/upsert_section;
-`~/.hermes/team/STANDING.md` supports replace/append. Operational notes use
-`team_bus log`. Assignment letters use context files. Handoff.md is not a
-coordination surface. Changing role bindings does not change document permissions.
+optional `~/.hermes/team/STANDING.md` supports replace/append. These files hold
+local overrides; reusable policy lives in [docs/team](team/README.md). Operational notes use
+`team_bus log`. Assignment letters use context files. Changing role bindings does
+not change document permissions.

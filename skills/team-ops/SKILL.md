@@ -8,8 +8,9 @@ tags: [hermes, team, bot-coms, board]
 
 # Team operations
 
-Read `~/.hermes/TEAM.md`. Contracts: `docs/BOARD.md` and `docs/WORKFLOWS.md`
-in this repository. Team configuration is `~/.hermes/team/workflows.json`.
+Read [shared team policy](../../docs/team/TEAM.md) and local `~/.hermes/TEAM.md`
+when present. Contracts: `docs/BOARD.md` and `docs/WORKFLOWS.md` in this repository.
+Team configuration is `~/.hermes/team/workflows.json`.
 
 ## Dispatch
 
@@ -56,13 +57,18 @@ owner can transfer; pause active execution first. History and parent links remai
 
 ## Limits
 
-- Spool + SQLite are the coordination surfaces. Do not fold or write Handoff.md.
-- Never infer a task's return address from ORG.md, a role title or today's bindings.
+- Spool + SQLite are the coordination surfaces.
+- Read each task's return address from its frozen contract.
 - Keep bodies in context files and metadata in the ledger, not spool payloads.
 - Do not infer LANDED from exit 0, missing output, screenshots from an older run,
   or an earlier review. Evidence must support the current submission.
 - Product edits follow the team's worktree and coding-agent requirements.
-- Never print credentials or `.ping-*` secrets.
-- TEAM.md and STANDING.md writes use `team_bus write_doc` under existing permissions.
+- Local TEAM.md and optional STANDING.md overrides use `team_bus write_doc` under
+  existing permissions. Shared documents are maintained in the repository.
 
-See `references/operating-loop.md` and `docs/WORKFLOWS.md` for commands and recovery.
+See `docs/WORKFLOWS.md` for commands and recovery.
+
+For a new teammate, follow [provisioning](references/provision.md): create a fresh
+profile, keep memories empty, and register its identity/capabilities in workflows.json.
+
+[Team document ownership](../../docs/team/README.md) · [Daily prune](../../docs/team/PRUNE.md).
