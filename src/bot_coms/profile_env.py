@@ -3,6 +3,7 @@
 from __future__ import annotations
 
 import os
+import json
 import re
 from pathlib import Path
 
@@ -84,11 +85,22 @@ def _peer_profiles(peers_yaml: Path) -> dict[str, str]:
     return profiles
 
 
+def _routing_profiles() -> dict[str, str]:
+    profiles = _peer_profiles(peers_yaml_path())
+    path = Path(os.environ.get('BOT_COMS_WORKFLOWS', '') or hermes_team_root() / 'workflows.json')
+    if path.exists():
+        data = json.loads(path.read_text(encoding='utf-8'))
+        for peer, info in data.get('peers', {}).items():
+            if info.get('profile'):
+                profiles[peer] = info['profile']
+    return profiles
+
+
 def peer_profile(peer_id: str) -> str:
     peer_id = (peer_id or "").strip()
     if not peer_id:
         return ""
-    return _peer_profiles(peers_yaml_path()).get(peer_id, "")
+    return _routing_profiles().get(peer_id, "")
 
 
 def profile_to_peer_id(profile: str) -> str:
@@ -96,7 +108,7 @@ def profile_to_peer_id(profile: str) -> str:
     profile = (profile or "").strip()
     if not profile:
         return ""
-    for peer_id, prof in _peer_profiles(peers_yaml_path()).items():
+    for peer_id, prof in _routing_profiles().items():
         if prof == profile:
             return peer_id
     return ""

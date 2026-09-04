@@ -226,7 +226,7 @@ def test_fail_ack_doorbells_return_address(stack_env, wakes, monkeypatch):
     )
     b.close()
     a.close()
-    assert recorded == [("a", "peer-a")]
+    assert recorded == []  # failure receipts are recorded without another model wake
 
 
 def test_spm_out_of_band_uses_adapter(stack_env, wakes, monkeypatch):
@@ -252,6 +252,8 @@ def test_spm_out_of_band_uses_adapter(stack_env, wakes, monkeypatch):
     sends.clear()
     coord.report(slice_id="S104", verdict="LANDED", evidence="done", from_peer="swe")
     assert ("pm", "project-manager") in recorded
+    assert adapters == []
+    coord.workflow("accept", actor="pm", slice_id="S104", revision=1, evidence="Accepted with evidence")
     assert adapters == ["spm:webhook"]
     assert sends == []
 
@@ -278,7 +280,9 @@ def test_discord_terminal_fold_uses_gateway_send_not_chat(stack_env, wakes, monk
     adapters.clear()
     sends.clear()
     coord.report(slice_id="S105", verdict="LANDED", evidence="done", from_peer="swe")
-    assert recorded == [], "Discord terminal fold must not hermes chat -Q"
+    assert recorded == [("pm", "project-manager")], "Internal report must reach reviewer"
+    assert sends == []
+    coord.workflow("accept", actor="pm", slice_id="S105", revision=1, evidence="Accepted with evidence")
     assert adapters == []
     assert sends == [("project-manager", "discord:chan:thread")]
 

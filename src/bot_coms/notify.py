@@ -68,6 +68,8 @@ def run_notify_argv(argv: list[str], source: str, payload: dict[str, Any]) -> No
 def source_argv(claimed: ClaimedMessage) -> dict[str, Any] | None:
     """Worker handler: deliver terminal responses with headers.source via argv."""
     env = claimed.envelope
+    if (env.headers or {}).get("delivery") == "internal":
+        return None
     if env.type != "response":
         raise SkipMessage()
     source = source_from_headers(env.headers)

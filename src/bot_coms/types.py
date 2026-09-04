@@ -140,6 +140,7 @@ class ClaimedMessage:
     peer_id: str
     path: Path
     worker_id: str
+    lease_token: str | None = None
 
 
 @dataclass

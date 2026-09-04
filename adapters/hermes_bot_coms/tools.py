@@ -86,7 +86,7 @@ def bot_coms_claim(args: dict | None = None, **kwargs) -> str:
     claimed = _client().claim(msg_id=a.get("id"))
     if claimed is None:
         return json.dumps({"claimed": False})
-    return json.dumps({"claimed": True, "envelope": claimed.envelope.to_dict()})
+    return json.dumps({"claimed": True, "lease_token": claimed.lease_token, "envelope": claimed.envelope.to_dict()})
 
 
 def bot_coms_reclaim(args: dict | None = None, **kwargs) -> str:
@@ -96,15 +96,15 @@ def bot_coms_reclaim(args: dict | None = None, **kwargs) -> str:
     return json.dumps({"peer": client.peer_id, "reclaimed": client.reclaim_stale()})
 
 
-def _claimed_or_processing(client: Client, msg_id: str) -> ClaimedMessage:
-    claimed = client.claim(msg_id=msg_id)
+def _claimed_or_processing(client: Client, msg_id: str, lease_token: str | None = None) -> ClaimedMessage:
+    claimed = None if lease_token else client.claim(msg_id=msg_id)
     if claimed is not None:
         return claimed
     path = client.paths.processing / f"{msg_id}.json"
     if not path.is_file():
         raise RuntimeError(f"message {msg_id} is not claimed")
     env = envelope_from_dict(read_json(path), max_payload_bytes=client.config.max_payload_bytes)
-    return ClaimedMessage(envelope=env, peer_id=client.peer_id, path=path, worker_id=client.worker_id)
+    return ClaimedMessage(envelope=env, peer_id=client.peer_id, path=path, worker_id=client.worker_id, lease_token=lease_token)
 
 
 def bot_coms_ack(args: dict | None = None, **kwargs) -> str:
@@ -113,7 +113,7 @@ def bot_coms_ack(args: dict | None = None, **kwargs) -> str:
     result = a.get("result")
     if isinstance(result, str):
         result = json.loads(result)
-    client.ack(_claimed_or_processing(client, a["id"]), result=result if isinstance(result, dict) else None)
+    client.ack(_claimed_or_processing(client, a["id"], a.get("lease_token")), result=result if isinstance(result, dict) else None)
     return json.dumps({"acked": a["id"]})
 
 
@@ -121,7 +121,7 @@ def bot_coms_nack(args: dict | None = None, **kwargs) -> str:
     a = _args(args, kwargs)
     client = _client()
     client.nack(
-        _claimed_or_processing(client, a["id"]),
+        _claimed_or_processing(client, a["id"], a.get("lease_token")),
         error=str(a.get("error") or "nack"),
         retryable=not bool(a.get("no_retry")),
     )
@@ -251,6 +251,7 @@ ACK_SCHEMA = {
     "parameters": {
         "type": "object",
         "properties": {
+            "lease_token": {"type":"string", "description":"Claim token returned by team_inbox or bot_coms_claim"},
             "id": {"type": "string"},
             "result": {"type": "object"},
         },
@@ -264,6 +265,7 @@ NACK_SCHEMA = {
     "parameters": {
         "type": "object",
         "properties": {
+            "lease_token": {"type":"string", "description":"Claim token returned by team_inbox or bot_coms_claim"},
             "id": {"type": "string"},
             "error": {"type": "string"},
             "no_retry": {"type": "boolean"},

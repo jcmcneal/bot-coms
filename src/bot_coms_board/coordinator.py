@@ -3,6 +3,8 @@
 from __future__ import annotations
 
 import os
+import json
+import hashlib
 from dataclasses import dataclass, field
 from pathlib import Path
 from typing import Any
@@ -19,6 +21,7 @@ from bot_coms_board.payload import (
     verify_content_digest,
 )
 from bot_coms_board.slice_status import merge_slice_view
+from bot_coms_board.workflow import resolve_contract, load_config
 from bot_coms_board.store import BusStore, open_store, profile_to_peer, team_root_from_env
 
 
@@ -63,6 +66,7 @@ class InboxDecision:
     error: str | None = None
     error_code: str | None = None
     handled: bool = False
+    lease_token: str | None = None
 
 
 @dataclass
@@ -91,8 +95,14 @@ class TeamCoordinator:
         store: BusStore | None = None,
     ) -> None:
         self.team_root = team_root or team_root_from_env()
-        self.spool_root = spool_root or default_spool_root()
+        self.spool_root = spool_root or (self.team_root / "spool" if team_root else default_spool_root())
         self.store = store or open_store(team_root=self.team_root)
+
+    def __enter__(self):
+        return self
+
+    def __exit__(self, *args):
+        self.store.close()
 
     def register_slice(
         self,
@@ -105,6 +115,7 @@ class TeamCoordinator:
         peer: str | None = None,
         tags: list[str] | None = None,
         notify_source: str | None = None,
+        contract: dict | None = None,
     ) -> dict[str, Any]:
         path = Path(assignment_path).expanduser().resolve()
         if not path.is_file():
@@ -121,6 +132,7 @@ class TeamCoordinator:
             tags=tags or [],
             status="QUEUED",
             notify_source=notify_source,
+            contract=contract,
         )
         return row.to_dict()
 
@@ -131,12 +143,15 @@ class TeamCoordinator:
         to_peer: str,
         title: str,
         assignment_path: str,
-        from_profile: str = "project-manager",
+        from_profile: str | None = None,
         from_peer: str | None = None,
         to_profile: str | None = None,
         tags: list[str] | None = None,
         intent: str = "assign",
         headers: dict[str, str] | None = None,
+        activity: str = "coordinate",
+        policy: str | None = None,
+        parent_slice: str | None = None,
     ) -> AssignResult:
         """Enqueue assign to ``to_peer``; return address is envelope ``from`` (FILO)."""
         from bot_coms_board.store import peer_to_profile, profile_to_peer
@@ -144,8 +159,23 @@ class TeamCoordinator:
         if to_profile is None:
             to_profile = peer_to_profile(to_peer)
         sender = (from_peer or os.environ.get("BOT_COMS_PEER_ID") or "").strip()
-        if not sender:
+        if not sender and from_profile:
             sender = profile_to_peer(from_profile)
+        if not sender:
+            raise ValueError('sender required: BOT_COMS_PEER_ID or from_profile')
+        from_profile = peer_to_profile(sender)
+        parse_payload({'schema_version': '1.0', 'intent': intent, 'slice': slice_id})
+        existing = self.store.get_slice(slice_id)
+        if existing and existing.contract:
+            contract = existing.contract
+            to_profile = existing.to_profile
+        else:
+            contract = resolve_contract(self.team_root, sender=sender, worker=to_peer,
+                                        activity=activity, policy=policy, parent_slice=parent_slice)
+            contract['intent'] = intent
+        from bot_coms.spool import require_peer
+        for peer in {sender, to_peer, contract['owner_peer'], *(g['peer'] for g in contract['gates'])}:
+            require_peer(self.spool_root, peer)
         notify_source = _notify_source_from_headers(headers)
         row = self.register_slice(
             slice_id=slice_id,
@@ -156,28 +186,98 @@ class TeamCoordinator:
             peer=to_peer,
             tags=tags,
             notify_source=notify_source,
+            contract=contract,
         )
-        payload = SlicePayload(schema_version="1.0", intent=intent, slice=slice_id)
-        idem = payload.idempotency_key(row.get("content_sha256"))
-        client = Client(self.spool_root, sender)
-        try:
-            env = client.send(
-                to_peer,
-                "request",
-                payload.to_dict(),
-                correlation_id=slice_id,
-                idempotency_key=idem,
-                reply_to=sender,
-                headers=headers,
-            )
-        finally:
-            client.close()
-        return AssignResult(
-            slice_id=slice_id,
-            row=row,
-            correlation_id=slice_id,
-            outbound_id=env.id,
-        )
+        self.flush_deliveries()
+        with self.store._lock:
+            env_row = self.store._conn.execute('SELECT message_id FROM workflow_outbox WHERE correlation_id=? ORDER BY event_id LIMIT 1', (slice_id,)).fetchone()
+        return AssignResult(slice_id=slice_id, row=row, correlation_id=slice_id,
+                            outbound_id=env_row['message_id'] if env_row else '')
+
+    def reconcile(self) -> dict:
+        from bot_coms_board.job_done import read_sidecar, tee_path_for, parse_exit_code, job_done
+        completed = []
+        # Recover EXIT that preceded the RUNNING stamp, or whose runner hook failed.
+        for row in self.store.list_slices(limit=10000):
+            if not row.contract or row.status != 'RUNNING' or not row.active_job:
+                continue
+            try:
+                sidecar = read_sidecar(row.active_job)
+                if sidecar.get('slice') != row.id:
+                    continue
+                if parse_exit_code(tee_path_for(row.active_job, sidecar)) != 'unknown':
+                    completed.append(job_done(row.active_job, team_root=self.team_root, spool_root=self.spool_root))
+            except (OSError, ValueError) as exc:
+                completed.append({'job':row.active_job, 'error':str(exc)})
+        return {'jobs': completed, **self.flush_deliveries()}
+
+    def flush_deliveries(self) -> dict:
+        import fcntl
+        lock_path = self.team_root / 'workflow-relay.lock'
+        with lock_path.open('a+b') as lock:
+            lock_path.chmod(0o600)
+            fcntl.flock(lock.fileno(), fcntl.LOCK_EX)
+            try:
+                return self._flush_deliveries()
+            finally:
+                fcntl.flock(lock.fileno(), fcntl.LOCK_UN)
+
+    def _flush_deliveries(self) -> dict:
+        from bot_coms.spool import require_peer, enqueue_inbox
+        from bot_coms.envelope import new_envelope
+        from bot_coms.types import SystemClock
+        from bot_coms.config import SpoolConfig, load_spool_json
+        from bot_coms.doorbell import ring
+        from bot_coms.atomic import read_json
+        from bot_coms.envelope import envelope_from_dict
+        delivered, errors = 0, []
+        woken = set()
+        for item in self.store.pending_deliveries(ready_only=True):
+            try:
+                paths = require_peer(self.spool_root, item['recipient'])
+                payload, headers = json.loads(item['payload']), json.loads(item['headers'])
+                sender_paths = require_peer(self.spool_root, item['sender'])
+                clock = SystemClock()
+                config = load_spool_json(sender_paths.spool_json, SpoolConfig())
+                from bot_coms.permissions import assert_owner, authorize_send, load_allowlist
+                assert_owner(sender_paths.peer_root, allow_foreign_owner=config.allow_foreign_owner)
+                assert_owner(paths.peer_root, allow_foreign_owner=config.allow_foreign_owner)
+                authorize_send(allowlist=load_allowlist(sender_paths.allowlist), from_peer=item['sender'],
+                               to_peer=item['recipient'], token=None)
+                env = new_envelope(from_peer=item['sender'], to=item['recipient'],
+                    msg_type='response' if headers.get('delivery') == 'external' else 'event',
+                    payload=payload, clock=clock, ttl_s=config.default_ttl_s,
+                    idempotency_key=item['idem_key'], correlation_id=item['correlation_id'],
+                    reply_to=item['sender'], headers=headers, max_payload_bytes=config.max_payload_bytes)
+                env.id = item['message_id']
+                # Stable ID: replay never creates a second delivery or revives consumed work.
+                if headers.get('delivery') == 'external':
+                    ring(env)
+                    self.store.delivery_finished(env.id, final=True)
+                    delivered += 1
+                    continue
+                from bot_coms.lease import reclaim_stale
+                reclaim_stale(paths, clock, config)
+                if (paths.processing / f"{env.id}.json").exists():
+                    self.store.delivery_finished(env.id)
+                    continue
+                if any((folder / f"{env.id}.json").exists() for folder in (paths.acked, paths.dead_letter)):
+                    self.store.delivery_finished(env.id, final=True)
+                    continue
+                existing = paths.inbox / f"{env.id}.json"
+                if existing.exists():
+                    env = envelope_from_dict(read_json(existing), max_payload_bytes=config.max_payload_bytes)
+                else:
+                    enqueue_inbox(paths, env, config=config, clock=clock)
+                if env.to not in woken:
+                    ring(env)  # exceptions leave the delivery pending for reconcile
+                    woken.add(env.to)
+                self.store.delivery_finished(env.id)
+                delivered += 1
+            except Exception as exc:
+                self.store.delivery_finished(item['message_id'], str(exc))
+                errors.append({'message_id':item['message_id'], 'error':str(exc)})
+        return {'delivered':delivered, 'pending':errors}
 
     def report(
         self,
@@ -187,18 +287,35 @@ class TeamCoordinator:
         evidence: str | None = None,
         from_peer: str,
         to_peer: str | None = None,
+        job: str | None = None,
     ) -> dict[str, Any]:
         """Report back to whoever assigned (return address), not a hardcoded PM."""
         from bot_coms_board.store import profile_to_peer
 
-        row = self.store.set_verdict(slice_id, verdict=verdict, evidence=evidence)
+        row = self.store.get_slice(slice_id)
         if row is None:
             raise ValueError(f"slice not found: {slice_id}")
+        if to_peer and to_peer != (row.contract.get('return_peer') or profile_to_peer(row.from_profile)):
+            raise ValueError('report destination must match assignment return address')
+        if row.contract:
+            self.store.submit_work(slice_id, actor=from_peer, verdict=verdict or 'SUBMITTED', evidence=evidence, job=job)
+            delivery = self.flush_deliveries()
+            row = self.store.get_slice(slice_id)
+            with self.store._lock:
+                last = self.store._conn.execute('SELECT message_id FROM workflow_outbox WHERE correlation_id=? ORDER BY event_id DESC LIMIT 1', (slice_id,)).fetchone()
+            return {'slice':slice_id, 'row':row.to_dict(), 'to_peer':row.contract['return_peer'],
+                    'envelope_id':last['message_id'] if last else '', 'delivery':delivery}
+        else:
+            if job and row.active_job != job:
+                raise ValueError('stale job completion')
+            row = self.store.set_verdict(slice_id, verdict=verdict, evidence=evidence)
         # FILO: report to the assigner's peer (from_profile → peer), not org chart.
-        return_peer = (to_peer or "").strip() or profile_to_peer(row.from_profile)
+        return_peer = row.contract.get('return_peer') or profile_to_peer(row.from_profile)
+        if to_peer and to_peer != return_peer:
+            raise ValueError('report destination must match assignment return address')
         payload = SlicePayload(schema_version="1.0", intent="report", slice=slice_id)
-        idem = payload.idempotency_key(row.content_sha256)
-        headers = _report_headers(row.notify_source)
+        idem = payload.idempotency_key(row.content_sha256) + ":" + hashlib.sha256(json.dumps([verdict, evidence, row.contract.get("revision")]).encode()).hexdigest()[:16]
+        headers = {**(_report_headers(row.notify_source) or {}), "delivery": "internal"}
         client = Client(self.spool_root, from_peer)
         try:
             env = client.send(
@@ -207,7 +324,7 @@ class TeamCoordinator:
                 payload.to_dict(),
                 correlation_id=slice_id,
                 idempotency_key=idem,
-                reply_to=return_peer,
+                reply_to=from_peer,
                 headers=headers,
             )
         finally:
@@ -225,6 +342,8 @@ class TeamCoordinator:
         row = self.store.get_slice(payload.slice)
         if row is None:
             return None, "slice not registered", "SLICE_NOT_FOUND"
+        if skip_digest:
+            return row.to_dict(), None, None
         if not skip_digest:
             try:
                 verify_content_digest(row.assignment_path, row.content_sha256)
@@ -270,40 +389,34 @@ class TeamCoordinator:
         auto_handle_intents: frozenset[str] | None = None,
     ) -> InboxDecision:
         if auto_handle_intents is None:
-            auto_handle_intents = (
-                frozenset({"report_only", "report", "cancel"})
-                if auto_handle
-                else frozenset({"report_only", "report", "cancel"})
-            )
-        always_ack_failures = True
+            auto_handle_intents = frozenset({"report_only", "report", "cancel"})
         msg_id = claimed.envelope.id
+        if claimed.envelope.type == 'response':
+            return InboxDecision(message_id=msg_id, slice_id=claimed.envelope.correlation_id,
+                                 intent='receipt', disposition='receipt', handled=True, ack_result={})
         try:
             payload = parse_payload(claimed.envelope.payload)
         except PayloadError as exc:
-            if always_ack_failures:
-                ack = self._fail_ack_payload(code=exc.code, message=str(exc))
-                return InboxDecision(
-                    message_id=msg_id,
-                    slice_id="",
-                    intent="",
-                    disposition="fail",
-                    ack_result=ack,
-                    error=str(exc),
-                    error_code=exc.code,
-                    handled=True,
-                )
+            ack = self._fail_ack_payload(code=exc.code, message=str(exc))
             return InboxDecision(
                 message_id=msg_id,
                 slice_id="",
                 intent="",
                 disposition="fail",
+                ack_result=ack,
                 error=str(exc),
                 error_code=exc.code,
-                handled=False,
+                handled=True,
             )
-
         if payload.intent == "assign":
             row = self.store.get_slice(payload.slice)
+            if row and row.contract:
+                generation = str(row.contract['generation'])
+                stale = (claimed.envelope.to != row.peer or
+                         not claimed.envelope.idempotency_key.endswith(':' + generation))
+                if stale or row.status in ('DONE', 'CANCELLED', 'PAUSED', 'REVIEW', 'BLOCKED'):
+                    return InboxDecision(message_id=msg_id, slice_id=payload.slice, intent='assign',
+                                         disposition='assign_inactive', handled=True, ack_result={})
             if row is not None and row.status in ("RUNNING", "REVIEW") and row.active_job:
                 ack = {
                     "intent": "ack",
@@ -312,7 +425,7 @@ class TeamCoordinator:
                 }
                 row_dict = row.to_dict()
                 try:
-                    body = read_assignment_body(row_dict["assignment_path"])
+                    body = read_assignment_body(row_dict["assignment_path"]) if payload.intent != "report" else ""
                 except OSError:
                     body = ""
                 return InboxDecision(
@@ -332,23 +445,15 @@ class TeamCoordinator:
             skip_digest=payload.intent == "report",
         )
         if err:
-            if always_ack_failures:
-                ack = self._fail_ack_payload(
-                    code=code or "ERROR",
-                    message=err,
-                    slice_id=payload.slice,
-                )
-                return InboxDecision(
-                    message_id=msg_id,
-                    slice_id=payload.slice,
-                    intent=payload.intent,
-                    disposition="fail",
-                    slice_row=row_dict,
-                    error=err,
-                    error_code=code,
-                    ack_result=ack,
-                    handled=True,
-                )
+            if payload.intent == 'assign' and row_dict and row_dict.get('contract'):
+                self.store.submit_work(payload.slice, actor=claimed.envelope.to,
+                                       verdict='ERROR', evidence=f'{code}: {err}')
+                self.flush_deliveries()
+            ack = self._fail_ack_payload(
+                code=code or "ERROR",
+                message=err,
+                slice_id=payload.slice,
+            )
             return InboxDecision(
                 message_id=msg_id,
                 slice_id=payload.slice,
@@ -357,14 +462,23 @@ class TeamCoordinator:
                 slice_row=row_dict,
                 error=err,
                 error_code=code,
-                handled=False,
+                ack_result=ack,
+                handled=True,
             )
-
         assert row_dict is not None
-        body = read_assignment_body(row_dict["assignment_path"])
+        body = read_assignment_body(row_dict["assignment_path"]) if payload.intent != "report" else ""
 
         if payload.intent == "cancel":
+            c = row_dict.get('contract') or {}
+            if c and claimed.envelope.from_peer not in {c['owner_peer'], c['return_peer']}:
+                return InboxDecision(message_id=msg_id, slice_id=payload.slice, intent='cancel',
+                                     disposition='fail', handled=True, ack_result={'intent':'fail', 'code':'NOT_OWNER'})
             if payload.intent in auto_handle_intents:
+                # Cancel dispatch, not an OS process. A running job must be paused by its owner first.
+                if row_dict.get('active_job'):
+                    return InboxDecision(message_id=msg_id, slice_id=payload.slice, intent='cancel',
+                                         disposition='fail', handled=True, ack_result={'intent':'fail','code':'ACTIVE_JOB'})
+                self.store.set_status(payload.slice, 'CANCELLED')
                 ack = {
                     "intent": "ack",
                     "slice": payload.slice,
@@ -460,7 +574,7 @@ class TeamCoordinator:
                 message_id=msg_id,
                 slice_id=payload.slice,
                 intent=payload.intent,
-                disposition="launch_agent",
+                disposition="coordinate" if row_dict.get("contract", {}).get("activity") == "coordinate" else "launch_agent",
                 slice_row=row_dict,
                 assignment_path=row_dict["assignment_path"],
                 assignment_body=body,
@@ -488,22 +602,64 @@ class TeamCoordinator:
         try:
             result.reclaimed = client.reclaim_stale()
             processed = 0
-            while processed < limit:
-                claimed = client.claim()
+            for envelope in client.receive(limit=limit):
+                claimed = client.claim(msg_id=envelope.id)
                 if claimed is None:
-                    break
+                    continue
                 decision = self.process_claim(
                     claimed,
                     client=client,
                     auto_handle=auto_handle,
                     auto_handle_intents=auto_handle_intents,
                 )
+                decision.lease_token = claimed.lease_token
                 self._commit_decision(client, claimed, decision)
                 result.decisions.append(decision)
                 processed += 1
         finally:
             client.close()
         return result
+
+    def workflow(self, action: str, *, actor: str, slice_id: str, **args) -> dict:
+        row = self.store.get_slice(slice_id)
+        if row is None:
+            raise ValueError('slice not found')
+        if action == 'describe':
+            return {'row': row.to_dict(), 'history': self.store.workflow_history(slice_id)}
+        if action == 'review':
+            self.store.record_review(slice_id, actor=actor, gate=args['gate'],
+                                     decision=args['decision'], evidence=args['evidence'], revision=args['revision'])
+            recipients = {row.contract['owner_peer'], row.contract['return_peer']}
+            if args['decision'] == 'REJECTED':
+                recipients.add(row.peer)
+        elif action == 'accept':
+            self.store.accept_work(slice_id, actor=actor, evidence=args['evidence'], revision=args['revision'])
+            recipients = {row.contract['return_peer']}
+        elif action == 'reassign':
+            from bot_coms.spool import require_peer
+            from bot_coms_board.store import peer_to_profile
+            targets = {args['to_peer'], *(args.get('gate_peers') or {}).values()}
+            targets.update(v for v in [args.get('owner_peer'), args.get('return_peer')] if v)
+            for target in targets:
+                require_peer(self.spool_root, target)
+            cfg = load_config(self.team_root)
+            cap = row.contract.get('worker_capability')
+            if cap and cap not in cfg['peers'].get(args['to_peer'], {}).get('capabilities', []):
+                raise ValueError('new worker lacks required capability')
+            for gate_id, peer in (args.get('gate_peers') or {}).items():
+                spec = next((g for g in row.contract['gates'] if g['id'] == gate_id), {})
+                capability = spec.get('capability')
+                if capability and capability not in cfg['peers'].get(peer, {}).get('capabilities', []):
+                    raise ValueError(f'{peer} lacks reviewer capability {capability}')
+            row = self.store.reassign_work(slice_id, actor=actor, to_peer=args['to_peer'],
+                        to_profile=peer_to_profile(args['to_peer']), reason=args['reason'],
+                        owner_peer=args.get('owner_peer'), return_peer=args.get('return_peer'), gate_peers=args.get('gate_peers'))
+            recipients = {row.peer}
+        else:
+            raise ValueError('unknown workflow action')
+        row = self.store.get_slice(slice_id)
+        delivery = self.flush_deliveries()
+        return {'row': row.to_dict(), 'history': self.store.workflow_history(slice_id), 'delivery':delivery}
 
     def slice_view(self, slice_id: str) -> dict[str, Any]:
         row = self.store.get_slice(slice_id)

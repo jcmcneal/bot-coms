@@ -1,0 +1,38 @@
+{
+  "version": 1,
+  "peers": {
+    "pm": {"profile": "project-manager", "capabilities": ["acceptance", "coordination"]},
+    "em": {"profile": "engineering-manager", "capabilities": ["engineering_review", "coordination"]},
+    "swe": {"profile": "software-engineer", "capabilities": ["implementation"]},
+    "verifier": {"profile": "verifier", "capabilities": ["verification"]},
+    "ux": {"profile": "ux-designer", "capabilities": ["design", "design_review"]},
+    "dna-researcher": {"profile": "dna-researcher", "capabilities": ["scientific_review", "research"]}
+  },
+  "bindings": {
+    "product_owner": "pm",
+    "engineering_reviewer": "em",
+    "independent_verifier": "verifier",
+    "design_reviewer": "ux",
+    "science_reviewer": "dna-researcher"
+  },
+  "defaults": {"implement": "delivery"},
+  "policies": {
+    "delivery": {
+      "owner": "product_owner",
+      "worker_capability": "implementation",
+      "gates": [
+        {"id": "engineering", "responsibility": "engineering_reviewer", "capability": "engineering_review", "independent": true},
+        {"id": "verification", "responsibility": "independent_verifier", "capability": "verification", "independent": true}
+      ]
+    },
+    "ui_delivery": {
+      "owner": "product_owner",
+      "worker_capability": "implementation",
+      "gates": [
+        {"id": "engineering", "responsibility": "engineering_reviewer", "capability": "engineering_review", "independent": true},
+        {"id": "verification", "responsibility": "independent_verifier", "capability": "verification", "independent": true},
+        {"id": "design", "responsibility": "design_reviewer", "capability": "design_review", "independent": true}
+      ]
+    }
+  }
+}

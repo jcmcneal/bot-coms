@@ -67,6 +67,7 @@ def cmd_assign(ns: argparse.Namespace) -> int:
             tags=[t.strip() for t in ns.tags.split(",") if t.strip()] if ns.tags else None,
             intent=ns.intent,
             headers=resolve_assign_headers(None),
+            activity=ns.activity, policy=ns.policy, parent_slice=ns.parent_slice,
         )
     except Exception as exc:
         _json_print({"success": False, "error": str(exc)})
@@ -98,6 +99,7 @@ def cmd_inbox(ns: argparse.Namespace) -> int:
             "decisions": [
                 {
                     "message_id": d.message_id,
+                    "lease_token": d.lease_token,
                     "slice": d.slice_id,
                     "intent": d.intent,
                     "disposition": d.disposition,
@@ -193,6 +195,23 @@ def cmd_job_done(ns: argparse.Namespace) -> int:
     return 0 if out.get("success") else 1
 
 
+def cmd_workflow(ns):
+    coord = _coord(ns)
+    try:
+        if not ns.peer:
+            raise ValueError('--peer or BOT_COMS_PEER_ID required')
+        args = {k:getattr(ns,k) for k in ('gate','decision','revision','evidence','to_peer','owner_peer','return_peer','reason') if getattr(ns,k) is not None}
+        if ns.gate_peers:
+            args['gate_peers'] = json.loads(ns.gate_peers)
+        _json_print({'success':True, **coord.workflow(ns.action, actor=ns.peer, slice_id=ns.slice, **args)})
+        return 0
+    except Exception as exc:
+        _json_print({'success':False,'error':str(exc)})
+        return 1
+    finally:
+        coord.store.close()
+
+
 def main(argv: list[str] | None = None) -> int:
     parser = argparse.ArgumentParser(prog="bot-coms-board")
     parser.add_argument(
@@ -208,7 +227,7 @@ def main(argv: list[str] | None = None) -> int:
     p.add_argument("--title", required=True)
     p.add_argument("--assignment-path", required=True)
     p.add_argument("--to-profile", default="software-engineer")
-    p.add_argument("--from-profile", default="project-manager")
+    p.add_argument("--from-profile", default=None)
     p.add_argument("--peer", default="")
     p.add_argument("--tags", default="")
     p.set_defaults(func=cmd_register)
@@ -218,10 +237,13 @@ def main(argv: list[str] | None = None) -> int:
     p.add_argument("--to-peer", required=True)
     p.add_argument("--title", required=True)
     p.add_argument("--assignment-path", required=True)
-    p.add_argument("--from-profile", default="project-manager")
+    p.add_argument("--from-profile", default=None)
     p.add_argument("--to-profile", default="")
     p.add_argument("--tags", default="")
     p.add_argument("--intent", default="assign")
+    p.add_argument("--activity", choices=["coordinate","implement","research","review"], default="coordinate")
+    p.add_argument("--policy")
+    p.add_argument("--parent-slice")
     p.set_defaults(func=cmd_assign)
 
     p = sub.add_parser("inbox")
@@ -275,8 +297,39 @@ def main(argv: list[str] | None = None) -> int:
     p.add_argument("job", help="agent_screen job id")
     p.set_defaults(func=cmd_job_done)
 
+    p = sub.add_parser('workflow')
+    p.add_argument('action', choices=['describe','review','accept','reassign'])
+    p.add_argument('--slice', required=True)
+    p.add_argument('--peer', default=os.environ.get('BOT_COMS_PEER_ID', ''))
+    p.add_argument('--gate')
+    p.add_argument('--decision', choices=['APPROVED','REJECTED'])
+    p.add_argument('--revision', type=int)
+    p.add_argument('--evidence')
+    p.add_argument('--to-peer')
+    p.add_argument('--owner-peer')
+    p.add_argument('--return-peer')
+    p.add_argument('--reason')
+    p.add_argument('--gate-peers', help='JSON object mapping gate IDs to new peers')
+    p.set_defaults(func=cmd_workflow)
+    p = sub.add_parser('reconcile', help='Replay durable pending deliveries without launching coding agents')
+    p.set_defaults(func=lambda ns: (_json_print(_coord(ns).reconcile()) or 0))
+
     ns = parser.parse_args(argv)
-    return ns.func(ns)
+    previous = {key:os.environ.get(key) for key in ('BOT_COMS_TEAM_ROOT','BOT_COMS_SPOOL_ROOT')}
+    try:
+        if ns.team_root:
+            os.environ['BOT_COMS_TEAM_ROOT'] = str(Path(ns.team_root).expanduser())
+        if ns.spool_root:
+            os.environ['BOT_COMS_SPOOL_ROOT'] = str(Path(ns.spool_root).expanduser())
+        elif ns.team_root:
+            os.environ['BOT_COMS_SPOOL_ROOT'] = str(Path(ns.team_root).expanduser() / 'spool')
+        return ns.func(ns)
+    finally:
+        for key, value in previous.items():
+            if value is None:
+                os.environ.pop(key, None)
+            else:
+                os.environ[key] = value
 
 
 if __name__ == "__main__":

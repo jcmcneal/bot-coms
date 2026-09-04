@@ -69,8 +69,8 @@ def parse_payload(raw: dict[str, Any] | None) -> SlicePayload:
             "slice must match ^[A-Za-z0-9][A-Za-z0-9_-]{0,63}$",
             code="INVALID_SLICE",
         )
-    if not isinstance(schema_version, str):
-        raise PayloadError("schema_version must be a string")
+    if schema_version != SCHEMA_VERSION:
+        raise PayloadError("unsupported schema_version", code="INVALID_SCHEMA")
 
     extra_keys = set(raw.keys()) - {"schema_version", "intent", "slice"}
     if extra_keys:

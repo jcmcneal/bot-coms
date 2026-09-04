@@ -44,6 +44,11 @@ def _write_sidecar(home: Path, job: str, **fields) -> Path:
     path = home / ".hermes" / "agent-screen" / f"{job}.json"
     path.parent.mkdir(parents=True, exist_ok=True)
     path.write_text(json.dumps(fields), encoding="utf-8")
+    if fields.get("slice"):
+        from bot_coms_board.store import open_store
+        store = open_store(team_root=home/".hermes/team")
+        store.set_status(fields["slice"], "RUNNING", active_job=job)
+        store.close()
     return path
 
 
@@ -58,15 +63,15 @@ def _write_tee(home: Path, job: str, exit_code: str = "0") -> Path:
 
 
 def test_verdict_for_exit() -> None:
-    assert verdict_for_exit("0") == "LANDED"
-    assert verdict_for_exit("0", "write") == "LANDED"
-    assert verdict_for_exit("0", "force") == "LANDED"
+    assert verdict_for_exit("0") == "EXECUTED"
+    assert verdict_for_exit("0", "write") == "EXECUTED"
+    assert verdict_for_exit("0", "force") == "EXECUTED"
     assert verdict_for_exit("0", "ask") == "ASK_DONE"
     assert verdict_for_exit("0", "plan") == "PLAN_DONE"
-    assert verdict_for_exit("unknown") == "LANDED"
-    assert verdict_for_exit("1") == "FAIL"
-    assert verdict_for_exit("1", "ask") == "FAIL"
-    assert verdict_for_exit("orphaned") == "FAIL"
+    assert verdict_for_exit("unknown") == "UNKNOWN"
+    assert verdict_for_exit("1") == "ERROR"
+    assert verdict_for_exit("1", "ask") == "ERROR"
+    assert verdict_for_exit("orphaned") == "ERROR"
 
 
 def test_parse_exit_code_last_line(tmp_path: Path) -> None:
@@ -111,7 +116,7 @@ def test_job_done_reports_any_roster_profile(job_env, monkeypatch) -> None:
     assert out["success"] is True
     assert out["action"] == "report"
     assert out["peer"] == "ux"
-    assert out["verdict"] == "LANDED"
+    assert out["verdict"] == "EXECUTED"
     assert out["report"]["to_peer"] == "pm"
     assert list((spool / "pm" / "inbox").glob("*.json"))
 
@@ -135,7 +140,7 @@ def test_job_done_reports_write_mode(job_env, monkeypatch) -> None:
     out = job_done("w1", home=home, team_root=team_root, spool_root=spool)
     assert out["action"] == "report"
     assert out["success"] is True
-    assert out["verdict"] == "LANDED"
+    assert out["verdict"] == "EXECUTED"
     assert list((spool / "pm" / "inbox").glob("*.json"))
 
 
@@ -156,7 +161,7 @@ def test_job_done_fail_exit(job_env, monkeypatch) -> None:
     _write_sidecar(home, "swe-job", profile="software-engineer", slice="S201", mode="force")
     _write_tee(home, "swe-job", "2")
     out = job_done("swe-job", home=home, team_root=team_root, spool_root=spool)
-    assert out["verdict"] == "FAIL"
+    assert out["verdict"] == "ERROR"
     assert out["action"] == "report"
 
 
@@ -184,7 +189,7 @@ def test_job_done_ask_mode_reports_without_landing(job_env, monkeypatch) -> None
     row = coord.store.get_slice("S9")
     assert row is not None
     assert row.verdict == "ASK_DONE"
-    assert row.status == "QUEUED"
+    assert row.status == "REVIEW"
 
 
 def test_job_done_personal_csa_notify(job_env, monkeypatch, tmp_path) -> None:

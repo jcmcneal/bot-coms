@@ -36,6 +36,8 @@ _STATUSES = frozenset(
         "REVIEW",
         "DONE",
         "PARKED",
+        "PAUSED",
+        "CANCELLED",
     }
 )
 _SLICE_RE = re.compile(r"^[A-Za-z0-9][A-Za-z0-9_-]{0,63}$")
@@ -198,7 +200,17 @@ def _action_status(args: dict, actor: str) -> str:
     if job and not _JOB_RE.fullmatch(job):
         return _err("invalid active_job", field="active_job")
     store = open_store()
-    row = store.set_status(sid, status, active_job=job)  # type: ignore[arg-type]
+    existing = store.get_slice(sid)
+    peer = os.environ.get('BOT_COMS_PEER_ID') or profile_to_peer(actor)
+    if existing and existing.contract and peer not in {existing.peer, existing.contract['owner_peer']}:
+        store.close()
+        return _err('only the assigned worker or accountable owner can change execution status')
+    try:
+        row = store.set_status(sid, status, active_job=job)
+    except ValueError as exc:
+        return _err(str(exc))
+    finally:
+        store.close()
     if row is None:
         return _err(f"slice not found: {sid}", slice=sid)
     return tool_result(action="status", slice=sid, status=status, row=row.to_dict(), actor=actor)
@@ -215,11 +227,14 @@ def _action_verdict(args: dict, actor: str) -> str:
     ):
         return _err("verdict action requires verdict and/or evidence")
     store = open_store()
-    row = store.set_verdict(
-        sid,  # type: ignore[arg-type]
-        verdict=verdict.strip() if isinstance(verdict, str) else None,
-        evidence=evidence.strip() if isinstance(evidence, str) else None,
-    )
+    try:
+        row = store.set_verdict(sid,
+            verdict=verdict.strip() if isinstance(verdict, str) else None,
+            evidence=evidence.strip() if isinstance(evidence, str) else None)
+    except ValueError as exc:
+        return _err(str(exc))
+    finally:
+        store.close()
     if row is None:
         return _err(f"slice not found: {sid}", slice=sid)
     return tool_result(action="verdict", slice=sid, row=row.to_dict(), actor=actor)

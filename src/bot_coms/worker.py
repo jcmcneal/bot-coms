@@ -7,7 +7,7 @@ from collections.abc import Callable
 from typing import Any
 
 from bot_coms.client import Client
-from bot_coms.types import ClaimedMessage, HandlerError, PoisonError, SkipMessage
+from bot_coms.types import ClaimedMessage, ClaimLost, HandlerError, PoisonError, SkipMessage
 
 
 class Worker:
@@ -43,6 +43,7 @@ class Worker:
                     clock=self.client.clock,
                     config=self.client.config,
                     heartbeat_only=True,
+                    lease_token=current.lease_token,
                 )
             except Exception:
                 continue
@@ -69,6 +70,8 @@ class Worker:
             result = self.handler(claimed)
             self.client.ack(claimed, result=result)
             return True
+        except ClaimLost:
+            return False  # a delegated handler may have settled it, or its lease was reclaimed
         except SkipMessage:
             self.client.release(claimed)
             return False
@@ -91,11 +94,15 @@ class Worker:
         hb.start()
         try:
             while not own_stop.is_set():
-                claimed = self.client.claim()
-                if claimed is None:
+                progressed = False
+                for envelope in self.client.receive(limit=100):
+                    if own_stop.is_set():
+                        break
+                    claimed = self.client.claim(msg_id=envelope.id)
+                    if claimed:
+                        progressed = self.handle_one(claimed) or progressed
+                if not progressed:
                     own_stop.wait(self.poll_interval_s)
-                    continue
-                self.handle_one(claimed)
         finally:
             with self._lock:
                 leftover = self._current
@@ -116,19 +123,18 @@ class Worker:
         hb.start()
         try:
             while not own_stop.is_set():
-                claimed = self.client.claim()
-                if claimed is None:
-                    idle += 1
-                    if idle >= idle_rounds:
+                progressed = False
+                for envelope in self.client.receive(limit=100):
+                    if own_stop.is_set():
                         break
+                    claimed = self.client.claim(msg_id=envelope.id)
+                    if claimed:
+                        progressed = self.handle_one(claimed) or progressed
+                idle = 0 if progressed else idle + 1
+                if idle >= idle_rounds:
+                    break
+                if not progressed:
                     own_stop.wait(self.poll_interval_s)
-                    continue
-                if self.handle_one(claimed):
-                    idle = 0
-                else:
-                    idle += 1
-                    if idle >= idle_rounds:
-                        break
         finally:
             hb_stop.set()
             hb.join(timeout=1)

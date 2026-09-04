@@ -76,15 +76,14 @@ def verdict_for_exit(exit_code: str, mode: str = "") -> str:
     Ask/plan EXIT:0 is a real job-done when that is all the letter asked.
     It is ASK_DONE / PLAN_DONE, not LANDED — LANDED means execute finished.
     """
-    mode_norm = (mode or "").strip().lower()
-    ok = exit_code == "0" or exit_code in {"", "unknown"}
-    if not ok:
-        return "FAIL"
-    if mode_norm in {"ask", "plan"}:
-        return "ASK_DONE" if mode_norm == "ask" else "PLAN_DONE"
-    if mode_norm in _MODES_EXECUTE or not mode_norm:
-        return "LANDED"
-    return "LANDED"
+    mode_norm = (mode or '').strip().lower()
+    if exit_code in {'', 'unknown'}:
+        return 'UNKNOWN'
+    if exit_code != '0':
+        return 'ERROR'
+    if mode_norm in {'ask', 'plan'}:
+        return 'ASK_DONE' if mode_norm == 'ask' else 'PLAN_DONE'
+    return 'EXECUTED'
 
 
 def resolve_worker_peer(profile: str) -> str:
@@ -192,7 +191,7 @@ def job_done(
 
     tee = tee_path_for(job, sidecar, home=home)
     exit_code = parse_exit_code(tee)
-    session_id = parse_session_id(tee)
+    session_id = str(sidecar.get("session_id") or "") or parse_session_id(tee)
     evidence = f"tee {tee} exit={exit_code} session={session_id or 'none'}"
     result["exit_code"] = exit_code
     result["evidence"] = evidence
@@ -231,12 +230,19 @@ def job_done(
     tr = team_root or team_root_from_env()
     sr = spool_root or default_spool_root()
     coord = TeamCoordinator(team_root=tr, spool_root=sr)
+    row = coord.store.get_slice(slice_id)
+    if row is None or row.active_job != job:
+        coord.store.close()
+        result.update(action='skip_stale_job', success=False, error='job does not own the active assignment')
+        return result
     out = coord.report(
         slice_id=slice_id,
         verdict=verdict,
         evidence=evidence,
         from_peer=peer,
+        job=job,
     )
+    coord.store.close()
     result["action"] = "report"
     result["report"] = out
     _append_log(

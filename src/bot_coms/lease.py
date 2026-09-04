@@ -3,6 +3,8 @@
 from __future__ import annotations
 
 import os
+import uuid
+from bot_coms.locking import locked
 from pathlib import Path
 
 from bot_coms.atomic import read_json, write_json_atomic
@@ -14,6 +16,7 @@ from bot_coms.permissions import assert_under_root
 from bot_coms.types import Clock
 
 
+@locked
 def write_lease(
     paths: PeerPaths,
     msg_id: str,
@@ -23,16 +26,24 @@ def write_lease(
     config: SpoolConfig,
     heartbeat_only: bool = False,
     claimed_at: str | None = None,
-) -> None:
+    lease_token: str | None = None,
+) -> str:
     now = format_ts(clock.now())
     body = {
         "worker_id": worker_id,
         "claimed_at": claimed_at or now,
         "heartbeat_at": now,
         "pid": os.getpid(),
+        "token": uuid.uuid4().hex,
     }
-    if heartbeat_only and paths.lease_path(msg_id).is_file():
+    if heartbeat_only:
+        from bot_coms.types import ClaimLost
+        if not paths.lease_path(msg_id).is_file() or not (paths.processing / f'{msg_id}.json').is_file():
+            raise ClaimLost(msg_id)
         prev = read_json(paths.lease_path(msg_id))
+        if prev.get('worker_id') != worker_id or (lease_token and prev.get('token') != lease_token):
+            raise ClaimLost(msg_id)
+        body['token'] = prev.get('token', '')
         if isinstance(prev, dict) and prev.get("claimed_at"):
             body["claimed_at"] = prev["claimed_at"]
             body["worker_id"] = prev.get("worker_id", worker_id)
@@ -48,6 +59,8 @@ def write_lease(
         audit(paths, clock, "claimed", file_mode=config.file_mode, msg_id=msg_id, worker_id=worker_id)
     else:
         audit(paths, clock, "heartbeat", file_mode=config.file_mode, msg_id=msg_id, worker_id=worker_id)
+
+    return body["token"]
 
 
 def delete_lease(paths: PeerPaths, msg_id: str) -> None:
@@ -69,6 +82,7 @@ def _lease_stale(lease_path: Path, now, timeout_s: float) -> bool:
     return (now - hb).total_seconds() > timeout_s
 
 
+@locked
 def reclaim_stale(paths: PeerPaths, clock: Clock, config: SpoolConfig) -> list[str]:
     reclaimed: list[str] = []
     now = clock.now()

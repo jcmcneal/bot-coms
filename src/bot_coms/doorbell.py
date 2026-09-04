@@ -12,6 +12,7 @@ from __future__ import annotations
 
 import os
 import subprocess
+import uuid
 from pathlib import Path
 from typing import Any, Callable
 
@@ -164,22 +165,12 @@ def build_wake_query(env: Envelope) -> str:
     slice_id = str(payload.get("slice") or env.correlation_id or "").strip()
     assignment_path = team_root() / "context" / f"{slice_id}.md" if slice_id else None
 
-    if intent == "assign" and slice_id and assignment_path is not None:
-        body = ""
-        if assignment_path.is_file():
-            try:
-                body = assignment_path.read_text(encoding="utf-8")[:4000]
-            except OSError:
-                body = ""
-        return (
-            f"Slice {slice_id} assigned.\n"
-            f"Assignment: {assignment_path}\n\n"
-            f"{body}\n\n"
-            "Call team_inbox, then launch ONE agent_screen job for this slice "
-            "(backend from profile agent_screen.default_backend).\n"
-            "Stamp team_bus status RUNNING with active_job, then bot_coms_ack. "
-            "End turn after launch.\n"
-        )
+    if intent == "assign" and slice_id:
+        return (f"Assignment {slice_id} from {env.from_peer}. Call team_inbox. "
+                "Follow the frozen assignment contract: coordinate in Hermes; launch a coding agent "
+                "only for implement/research/review work that needs it. Preserve parent_slice on child assignments. "
+                "Stamp RUNNING with the actual job before acknowledging a launch. "
+                "Use team_workflow describe for required reviewers and owner. End turn after dispatch.\n")
 
     line = _payload_summary(payload)
     parts = [
@@ -197,7 +188,7 @@ def build_wake_query(env: Envelope) -> str:
 def _default_wake(profile: str, peer_id: str, env: Envelope) -> None:
     """Background ``hermes -p <profile> chat -Q --query-file``; never ``--continue`` / ``-c``."""
     query = build_wake_query(env)
-    qf = Path.home() / ".hermes" / "profiles" / profile / f"board-wake-{os.getpid()}.txt"
+    qf = Path.home() / ".hermes" / "profiles" / profile / f"board-wake-{env.id}-{uuid.uuid4().hex}.txt"
     qf.parent.mkdir(parents=True, exist_ok=True)
     qf.write_text(query, encoding="utf-8")
     hermes = hermes_bin()
@@ -247,13 +238,14 @@ def _default_adapter(source: str, env: Envelope) -> None:
         return
     script = adapter_ping_script(source)
     if not script.is_file():
-        return
+        raise FileNotFoundError(f"notification adapter missing: {script}")
     msg = _adapter_message(env)
-    subprocess.Popen(  # noqa: S603 — operator-owned adapter path
+    subprocess.run(  # noqa: S603 — operator-owned adapter path
         [str(script), msg],
         stdout=subprocess.DEVNULL,
         stderr=subprocess.DEVNULL,
-        start_new_session=True,
+        timeout=30,
+        check=True,
     )
 
 
@@ -297,7 +289,8 @@ def _default_gateway_send(profile: str, source: str, env: Envelope) -> None:
                 f"msg={msg!r} err={last_err}\n"
             )
     except OSError:
-        return
+        pass
+    raise RuntimeError(f"gateway notification failed: {last_err}")
 
 
 def ring(env: Envelope) -> None:
@@ -314,16 +307,17 @@ def ring(env: Envelope) -> None:
         return
 
     source = source_from_headers(env.headers)
-    if is_out_of_band_source(source) and is_terminal_fold(payload):
-        (_adapter_runner or _default_adapter)(source, env)
-        # Peer wake still applies when ``to`` is a spool peer (nested stack).
-    elif is_messaging_source(source) and is_terminal_fold(payload):
-        peer_id = (env.to or "").strip()
-        profile = peer_to_hermes_profile(peer_id) if peer_id else "default"
-        if not profile:
-            profile = "default"
-        (_send_runner or _default_gateway_send)(profile, source, env)
+    external = (env.headers or {}).get('delivery') == 'external'
+    if external:
+        if is_out_of_band_source(source):
+            (_adapter_runner or _default_adapter)(source, env)
+        elif is_messaging_source(source):
+            (_send_runner or _default_gateway_send)(peer_to_hermes_profile(env.to), source, env)
+        else:
+            raise ValueError('external delivery requires a supported source')
         return
+    if env.type == 'response':
+        return  # receipts never wake or broadcast
 
     peer_id = (env.to or "").strip()
     if not peer_id:

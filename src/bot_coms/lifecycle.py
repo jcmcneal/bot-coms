@@ -3,6 +3,7 @@
 from __future__ import annotations
 
 import os
+from bot_coms.locking import locked
 from datetime import timedelta
 from typing import Any
 
@@ -83,6 +84,7 @@ def Path_unlink(path) -> None:
     Path(path).unlink(missing_ok=True)
 
 
+@locked
 def claim(
     paths: PeerPaths,
     *,
@@ -151,9 +153,22 @@ def claim(
             os.replace(str(path), str(dest))
         except FileNotFoundError:
             continue
-        write_lease(paths, env.id, worker_id=worker_id, clock=clock, config=config)
-        return ClaimedMessage(envelope=env, peer_id=paths.peer_id, path=dest, worker_id=worker_id)
+        token = write_lease(paths, env.id, worker_id=worker_id, clock=clock, config=config)
+        return ClaimedMessage(envelope=env, peer_id=paths.peer_id, path=dest, worker_id=worker_id, lease_token=token)
     return None
+
+
+def _assert_claim(paths, claimed):
+    from bot_coms.types import ClaimLost
+    if not claimed.path.is_file():
+        raise ClaimLost(claimed.envelope.id)
+    if claimed.lease_token:
+        try:
+            lease = read_json(paths.lease_path(claimed.envelope.id))
+        except OSError:
+            raise ClaimLost(claimed.envelope.id)
+        if lease.get('token') != claimed.lease_token:
+            raise ClaimLost(claimed.envelope.id)
 
 
 def _expire_processing_if_needed(paths: PeerPaths, claimed: ClaimedMessage, config: SpoolConfig, clock: Clock) -> None:
@@ -169,6 +184,7 @@ def _expire_processing_if_needed(paths: PeerPaths, claimed: ClaimedMessage, conf
         raise Expired(claimed.envelope.id)
 
 
+@locked
 def ack(
     paths: PeerPaths,
     claimed: ClaimedMessage,
@@ -178,23 +194,33 @@ def ack(
     store: IdempotencyStore | None = None,
     result: dict[str, Any] | None = None,
 ) -> None:
+    _assert_claim(paths, claimed)
     _expire_processing_if_needed(paths, claimed, config, clock)
     if not claimed.path.is_file():
         from bot_coms.types import ClaimLost
 
         raise ClaimLost(claimed.envelope.id)
+    # Persist completion before publication. A reclaimed message replays the saved
+    # result through Worker without repeating the handler's side effects.
+    if store is not None:
+        store.complete(paths.peer_id, claimed.envelope.idempotency_key, result, clock)
+    if result is not None and claimed.envelope.type != "response":
+        write_result(paths, claimed.envelope, result, config=config, clock=clock)
     dest = paths.acked / claimed.path.name
     os.replace(str(claimed.path), str(dest))
     delete_lease(paths, claimed.envelope.id)
-    if store is not None:
-        store.complete(paths.peer_id, claimed.envelope.idempotency_key, result, clock)
-    # A response is a terminal delivery receipt.  In particular, a worker
-    # must be able to acknowledge a response even if its generic handler
-    # returns a status payload; emitting that payload as another response
-    # would create an acknowledgement loop.
-    if result is not None and claimed.envelope.type != "response":
-        write_result(paths, claimed.envelope, result, config=config, clock=clock)
     audit(paths, clock, "acked", file_mode=config.file_mode, msg_id=claimed.envelope.id)
+
+
+def _result_id(message_id: str) -> str:
+    import hashlib
+    alphabet = '0123456789ABCDEFGHJKMNPQRSTVWXYZ'
+    value = int.from_bytes(hashlib.sha256(('result:' + message_id).encode()).digest()[:16], 'big')
+    chars = []
+    for _ in range(26):
+        chars.append(alphabet[value & 31])
+        value >>= 5
+    return ''.join(reversed(chars))
 
 
 def write_result(
@@ -210,7 +236,7 @@ def write_result(
     now = clock.now()
     response = Envelope(
         schema_version=SCHEMA_VERSION,
-        id=generate_ulid(now),
+        id=_result_id(original.id),
         idempotency_key=f"result:{original.idempotency_key}",
         correlation_id=original.correlation_id,
         from_peer=claimer.peer_id,
@@ -226,7 +252,8 @@ def write_result(
         headers=dict(original.headers) if original.headers else None,
     )
     dest = require_peer(claimer.root, reply_peer)
-    enqueue_inbox(dest, response, config=config, clock=clock)
+    if not any((folder / f'{response.id}.json').exists() for folder in (dest.inbox, dest.processing, dest.acked, dest.dead_letter)):
+        enqueue_inbox(dest, response, config=config, clock=clock)
     write_json_atomic(
         claimer.results,
         f"{original.correlation_id}.json",
@@ -250,6 +277,7 @@ def write_result(
     return response
 
 
+@locked
 def nack(
     paths: PeerPaths,
     claimed: ClaimedMessage,
@@ -260,6 +288,7 @@ def nack(
     store: IdempotencyStore | None = None,
     retryable: bool = True,
 ) -> None:
+    _assert_claim(paths, claimed)
     env = claimed.envelope
     if not retryable:
         if store is not None:
@@ -313,6 +342,7 @@ def nack(
     )
 
 
+@locked
 def release_to_inbox(
     paths: PeerPaths,
     claimed: ClaimedMessage,
@@ -322,6 +352,7 @@ def release_to_inbox(
     store: IdempotencyStore | None = None,
 ) -> None:
     """Clean shutdown: return to inbox without bumping attempt."""
+    _assert_claim(paths, claimed)
     if claimed.path.is_file():
         os.replace(str(claimed.path), str(paths.inbox / claimed.path.name))
     delete_lease(paths, claimed.envelope.id)

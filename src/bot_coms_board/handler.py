@@ -22,7 +22,7 @@ def make_team_handler(
     """Return a handler suitable for ``bot_coms.Worker``.
 
     Handles deterministic intents only (report_only, report, cancel).
-    Assign is wake-only via pulse; SWE completes via team_inbox + bot_coms_ack.
+    Assignments are handled by Hermes via team_inbox; recovery uses the durable relay.
     """
 
     coord = TeamCoordinator(
@@ -32,7 +32,7 @@ def make_team_handler(
 
     def handler(claimed: ClaimedMessage) -> dict[str, Any] | None:
         if claimed.envelope.type == "response":
-            raise SkipMessage()
+            return None
         from bot_coms import Client
 
         client = Client(coord.spool_root, peer)
@@ -46,7 +46,7 @@ def make_team_handler(
         finally:
             client.close()
 
-        if decision.disposition == "launch_agent":
+        if decision.disposition in {"launch_agent", "coordinate"}:
             raise SkipMessage()
         return decision.ack_result if decision.handled else None
 
@@ -86,7 +86,8 @@ def build_assign_wake_query(
         f"Slice {slice_id} assigned.\n"
         f"Assignment: {assignment_path}\n\n"
         f"{preview}\n\n"
-        "Call team_inbox, then launch ONE agent_screen job for this slice "
-        "(backend from profile agent_screen.default_backend). "
-        "Stamp team_bus status RUNNING with active_job, then bot_coms_ack. End turn after launch."
+        "Call team_inbox and follow the assignment activity and frozen workflow contract. "
+        "Coordinate in Hermes; launch an agent only when the explicit activity needs one. "
+        "For agent work, stamp RUNNING with active_job and acknowledge with the claim token. "
+        "End turn after dispatch."
     )

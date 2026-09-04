@@ -1,10 +1,10 @@
 # bot-coms
 
-Standalone bot-to-bot messaging over a **local POSIX filesystem spool**. Delivery is at-least-once; side effects are exactly-once when handlers consult the idempotency store (or are naturally idempotent).
+Standalone bot-to-bot messaging over a **local POSIX filesystem spool**. Delivery is at-least-once; completed handler results are replayable through the idempotency store. External side effects must be idempotent or transactionally coordinated; arbitrary effects are not guaranteed exactly once.
 
 This project does **not** depend on the Hermes A2A gateway or Open Genome. HTTP transport is post-MVP (see `docs/HTTP_ADAPTER_SKETCH.md`).
 
-**Team coordination** lives in the sibling package `bot_coms_board` (same repo): `bus.sqlite` ledger, `team_assign` / `team_inbox` / `team_report` Hermes tools, and `bot-coms-board` CLI. See `docs/BOARD.md`. The transport core never imports the board lane.
+**Team coordination** lives in the sibling package `bot_coms_board` (same repo): `bus.sqlite` ledger, `team_assign` / `team_inbox` / `team_report` Hermes tools, and `bot-coms-board` CLI. See `docs/BOARD.md` and [`docs/WORKFLOWS.md`](docs/WORKFLOWS.md) for configurable responsibilities, frozen ownership, independent review gates and owner acceptance. The transport core never imports the board lane.
 
 MVP requires a **local POSIX** disk (APFS/ext4). NFS and other shared filesystems are unsupported.
 

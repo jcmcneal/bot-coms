@@ -42,6 +42,7 @@ class IdempotencyStore:
         self._conn.execute("PRAGMA journal_mode=WAL")
         self._conn.execute("PRAGMA synchronous=FULL")
         self._conn.execute(_SCHEMA)
+        self._conn.execute("CREATE INDEX IF NOT EXISTS idx_idem_gc ON idempotency(status,updated_at)")
         self._conn.commit()
         try:
             os.chmod(db_path, 0o600)
@@ -53,24 +54,10 @@ class IdempotencyStore:
             self._conn.close()
 
     def gc(self, clock: Clock, retention_s: float) -> None:
-        cutoff = clock.now().timestamp() - retention_s
-        with self._lock:
-            rows = list(self._conn.execute("SELECT peer, idem_key, status, updated_at FROM idempotency"))
-            for row in rows:
-                if row["status"] != "completed":
-                    continue
-                try:
-                    from bot_coms.envelope import parse_ts
-
-                    ts = parse_ts(row["updated_at"]).timestamp()
-                except Exception:
-                    continue
-                if ts < cutoff:
-                    self._conn.execute(
-                        "DELETE FROM idempotency WHERE peer=? AND idem_key=?",
-                        (row["peer"], row["idem_key"]),
-                    )
-            self._conn.commit()
+        from datetime import timedelta
+        cutoff = format_ts(clock.now() - timedelta(seconds=retention_s))
+        with self._lock, self._conn:
+            self._conn.execute("DELETE FROM idempotency WHERE status='completed' AND updated_at < ?", (cutoff,))
 
     def get(self, peer: str, key: str) -> sqlite3.Row | None:
         with self._lock:

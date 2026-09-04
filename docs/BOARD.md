@@ -1,142 +1,38 @@
-# Board contract (bot-coms-board)
+# Board contract
 
-Team coordination lives in **`bot_coms_board`**, an opt-in sibling package in the
-bot-coms repo. The `bot_coms` transport core never imports it.
+`bot_coms_board` composes the local POSIX spool with the global ledger at
+`~/.hermes/team/bus.sqlite`; `BOT_COMS_TEAM_ROOT` overrides it for tests/deployments.
+Transport core modules never import board modules.
 
-## Reply stack (FILO)
+See [WORKFLOWS.md](WORKFLOWS.md) for role-independent ownership, configurable review
+policies, acceptance, reassignment, schema migration and recovery commands.
 
-Addressing is envelope **`from` / `to`**. Nested assigns nest the stack: report
-back to whoever mailed you. Do **not** read `peers.yaml` / `ORG.md` to decide a
-parent. `peers.yaml` may still map peer id → Hermes profile for **routing** the
-doorbell (not org chart).
+## Interfaces
 
-```
-A writes {from:A, to:B, intent:assign, …} → spool/B/inbox → doorbell B
-B writes {from:B, to:A, intent:report, …} → spool/A/inbox → doorbell A
-```
+- `team_assign`: register and durably dispatch; explicit activity, optional policy
+  and parent_slice. Sender comes from runtime identity, never a default PM role.
+- `team_inbox`: claim and parse commands; responses are receipts. Returns the
+  assignment contract, message ID and lease token. Coordinate in Hermes; an
+  execution activity may require a coding agent.
+- `team_report`: submit actual outcome/evidence to the frozen return peer and
+  required reviewers. Process exit alone is not an accepted delivery.
+- `team_workflow`: describe, review, accept, reassign, reconcile.
+- `team_bus`: inspect/status/log and legacy CRUD; cannot bypass new acceptance gates.
 
-Return address is envelope `from` (ack fold uses `reply_to` or original `from`).
-Origin surface is the return path: Discord-in → Discord-out.
+The lean envelope is `{"schema_version":"1.0","intent":"assign","slice":"S1"}`.
+Intents remain assign/report_only/report/cancel. Bodies live in context files;
+contracts and individual reviewer decisions live in SQLite. Legacy text PINGs and
+unknown schema versions are rejected. Internal envelopes carry `delivery=internal`;
+origin metadata never authorizes an early external broadcast.
 
-Doorbell after a successful spool put:
+RUNNING requires an actual job handle for contracted work. PAUSED preserves the
+resumable session in its sidecar while clearing active execution. Cancel stops
+queued dispatch; it refuses active jobs until their owner pauses/stops them.
 
-| Envelope | Delivery |
-|---|---|
-| `assign` (spool peer) | fresh Hermes session `hermes -p <to-profile> chat -Q --query-file` (never `--continue` / `-c`) |
-| Terminal fold (`report` / `LANDED` / `FAIL`) + `headers.source=discord:…` (telegram, …) | `hermes -p <to-profile> send --to {source}` — **not** `chat -Q` |
-| RUNNING-only `ack` (incl. `type=response` + `status=RUNNING` with missing intent) | stamp SQL only — **no** wake |
-| Out-of-band `headers.source` (`spm:…`, webhook, …) | matching adapter (e.g. `~/.hermes/team/ping-spm.sh`) |
+## Instruction documents
 
-Agent EXIT (`hermes-team-ops` `agent_screen` runner) calls
-`bot-coms job-done <job>` directly: sidecar `~/.hermes/agent-screen/<job>.json`
-+ `peers.yaml` profile→peer map → `team_report`. No role allowlist. No
-`wake-cli-job.sh` (install removes any live `~/.hermes/scripts/wake-cli-job.sh`).
-
-Never print or commit `.ping-spm` secrets.
-
-**Pulse cron is not the control plane.** `scripts/bot-coms-pulse.sh` is a
-stuck-lease reclaim stub. Disable LaunchAgent/cron job id `b0tc0mspu15e`.
-
-## Storage
-
-| Store | Path | Purpose |
-|---|---|---|
-| Slice ledger | `~/.hermes/team/bus.sqlite` | register, status, verdict, active_job |
-| Assignment bodies | `~/.hermes/team/context/<SLICE>.md` | prose letter |
-| Spool | `~/.hermes/team/spool/` | doorbell envelopes |
-
-Board paths are **global** (`~/.hermes/team/`). Tests may override via
-`BOT_COMS_TEAM_ROOT`. Do not pass profile `HERMES_HOME` as a board root.
-
-## Spool payload (lean doorbell)
-
-```json
-{ "schema_version": "1.0", "intent": "assign", "slice": "S9" }
-```
-
-Only three keys: `schema_version`, `intent`, `slice`. Metadata lives in SQL at
-`register` time. Legacy text `PING read … BUS.md item …` is **rejected**.
-
-## Intents
-
-| intent | Sender | Receiver action |
-|---|---|---|
-| `assign` | any peer | fire-and-forget; assignee inbox → launch → stamp handle → ack RUNNING |
-| `report_only` | assigner | read context → ACK verdict → **no coding agent** |
-| `report` | worker | completion doorbell to **return address** (`from` / assigner peer) |
-| `cancel` | assigner | ACK cancelled |
-
-**RUNNING is valid only with `active_job` set** in bus.sqlite before the
-assigner treats dispatch as successful. RUNNING ack does not doorbell.
-
-## High-level tools (prefer these)
-
-| Tool | Who | Replaces |
-|---|---|---|
-| `team_assign` | assigner | register + send (async, no wait) |
-| `team_inbox` | worker | claim + parse + slice + digest + dispatch |
-| `team_report` | worker | verdict + emit report to return address |
-| `team_bus` | any | raw board CRUD; PM `write_doc` for TEAM.md / STANDING.md |
-
-## PM-owned docs (`team_bus write_doc`)
-
-Constitution and standing rules live in allowlisted paths only:
-
-| Doc | Path | Modes |
-|---|---|---|
-| Team constitution | `~/.hermes/TEAM.md` | `replace`, `append`, `upsert_section` |
-| Standing rules file | `~/.hermes/team/STANDING.md` | `replace`, `append` |
-
-**Do not** patch `TEAM.md` with Hermes `patch` / `write_file` — PM `HERMES_HOME` is
-under `profiles/project-manager`, so the authoritative-home skip does not apply and
-writes hit `protected_instruction_file`. Use `team_bus` `write_doc` instead.
-
-BUS operational notes stay on `team_bus` `log`. Slice assignment letters stay
-`write_file` under `team/context/<SLICE>.md` (already ungated).
-
-## CLI
-
-```bash
-bot-coms-board assign --slice S9 --to-peer swe --title "…" --assignment-path …
-bot-coms-board inbox --peer swe
-bot-coms-board worker --peer swe    # report_only/cancel/report only
-bot-coms-board report --slice S9 --from-peer swe --verdict LANDED --evidence "…"
-bot-coms-board migrate [--dry-run]
-```
-
-## Assign sequence
-
-1. Write `team/context/<SLICE>.md`
-2. `team_assign` (register + send; does **not** wait for ACK) → doorbell `to`
-3. End turn
-4. Assignee stamps `RUNNING` + `active_job` in SQL; RUNNING ack does **not** wake
-5. `LANDED` / `FAIL` + evidence arrive via `team_report` → doorbell return address
-
-`team_bus slice` is **inspect-only** after assign — do not poll for completion.
-Pulse is **not** required to drain the inbox.
-
-## Worker receive
-
-Doorbell wakes Hermes for `assign` (and other non-RUNNING mail). Board worker
-handles `report_only` / `cancel` / `report` in Python (no coding agent).
-
-Worker assign completion:
-
-1. `team_inbox` → `launch_agent` bundle (message stays claimed until ack)
-2. ONE `agent_screen` with `slice=` in sidecar
-3. `team_bus status` → `RUNNING` + `active_job`
-4. `bot_coms_ack` with `{intent: ack, slice, status: RUNNING}` (no wake)
-
-## Mid-task questions
-
-`team_assign` is Hermes-to-Hermes (async). The coding agent never calls it. There
-is no synchronous `ask_team`. One agent session per slice through investigate →
-plan → implement. An agent question is **PAUSED**: Hermes assigns the question
-async, keeps unblocked work, resumes the same session via `session_id`.
-Unattended question prompts are auto-skipped. No nested waits.
-
-## Envelope headers
-
-- `correlation_id` = slice id
-- `idempotency_key` = `{intent}:{slice}:{content_sha256_prefix8}`
-- `headers.source` = origin return path (Discord/telegram → `hermes send`; SPM → adapter)
+`team_bus write_doc` retains the existing document-edit permissions and allowlist:
+`~/.hermes/TEAM.md` supports replace/append/upsert_section;
+`~/.hermes/team/STANDING.md` supports replace/append. Operational notes use
+`team_bus log`. Assignment letters use context files. Handoff.md is not a
+coordination surface. Changing role bindings does not change document permissions.

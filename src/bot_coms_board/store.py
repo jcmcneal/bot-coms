@@ -6,12 +6,14 @@ import json
 import os
 import sqlite3
 import threading
-from dataclasses import dataclass
+from dataclasses import dataclass, field
 from datetime import datetime, timezone
 from pathlib import Path
 from typing import Any
 
-_SCHEMA_VERSION = 2
+from bot_coms_board.workflow_ledger import WorkflowLedger
+
+_SCHEMA_VERSION = 3
 
 _SCHEMA = """
 CREATE TABLE IF NOT EXISTS schema_meta (
@@ -29,6 +31,7 @@ CREATE TABLE IF NOT EXISTS slices (
     assignment_path TEXT NOT NULL,
     content_sha256  TEXT,
     notify_source   TEXT,
+    contract        TEXT NOT NULL DEFAULT '{}',
     status          TEXT NOT NULL,
     verdict         TEXT,
     evidence        TEXT,
@@ -37,6 +40,29 @@ CREATE TABLE IF NOT EXISTS slices (
     created_at      TEXT NOT NULL,
     updated_at      TEXT NOT NULL
 );
+
+CREATE TABLE IF NOT EXISTS workflow_outbox (
+    message_id TEXT PRIMARY KEY,
+    event_id INTEGER NOT NULL,
+    sender TEXT NOT NULL,
+    recipient TEXT NOT NULL,
+    payload TEXT NOT NULL,
+    headers TEXT NOT NULL,
+    correlation_id TEXT NOT NULL,
+    idem_key TEXT NOT NULL,
+    delivered INTEGER NOT NULL DEFAULT 0,
+    next_attempt REAL NOT NULL DEFAULT 0,
+    last_error TEXT
+);
+CREATE TABLE IF NOT EXISTS workflow_events (
+    id INTEGER PRIMARY KEY AUTOINCREMENT,
+    slice_id TEXT NOT NULL,
+    kind TEXT NOT NULL,
+    actor TEXT NOT NULL,
+    details TEXT NOT NULL,
+    at TEXT NOT NULL
+);
+CREATE INDEX IF NOT EXISTS idx_workflow_events_slice ON workflow_events(slice_id,id);
 
 CREATE TABLE IF NOT EXISTS bus_log (
     id      INTEGER PRIMARY KEY AUTOINCREMENT,
@@ -64,6 +90,8 @@ _STATUSES = frozenset(
         "REVIEW",
         "DONE",
         "PARKED",
+        "PAUSED",
+        "CANCELLED",
     }
 )
 
@@ -71,10 +99,12 @@ _STATUSES = frozenset(
 def _status_for_verdict(verdict: str) -> tuple[str, bool] | None:
     """Map terminal verdicts to SQL status (and whether to clear active_job)."""
     key = verdict.strip().upper()
-    if key == "LANDED":
+    if key in {"LANDED", "EXECUTED", "ASK_DONE", "PLAN_DONE"}:
         return ("REVIEW", True)
-    if key == "FAIL":
+    if key in {"FAIL", "ERROR", "UNKNOWN", "BLOCKED"}:
         return ("BLOCKED", True)
+    if key == "PAUSED":
+        return ("PAUSED", True)
     return None
 
 
@@ -116,9 +146,11 @@ class SliceRow:
     superseded_by: str | None
     created_at: str
     updated_at: str
+    contract: dict[str, Any] = field(default_factory=dict)
 
     def to_dict(self) -> dict[str, Any]:
         return {
+            "contract": self.contract,
             "id": self.id,
             "to_profile": self.to_profile,
             "from_profile": self.from_profile,
@@ -147,6 +179,7 @@ class SliceRow:
         if not isinstance(tags, list):
             tags = []
         return cls(
+            contract=json.loads(row["contract"] or "{}") if "contract" in row.keys() else {},
             id=row["id"],
             to_profile=row["to_profile"],
             from_profile=row["from_profile"],
@@ -166,7 +199,7 @@ class SliceRow:
         )
 
 
-class BusStore:
+class BusStore(WorkflowLedger):
     def __init__(self, db_path: Path) -> None:
         self._db_path = db_path
         self._lock = threading.Lock()
@@ -212,6 +245,13 @@ class BusStore:
             )
             self._conn.commit()
 
+        if current < 3:
+            cols = {r['name'] for r in self._conn.execute('PRAGMA table_info(slices)')}
+            if 'contract' not in cols:
+                self._conn.execute("ALTER TABLE slices ADD COLUMN contract TEXT NOT NULL DEFAULT '{}' ")
+            self._conn.execute("UPDATE schema_meta SET value='3' WHERE key='version'")
+            self._conn.commit()
+
     def close(self) -> None:
         with self._lock:
             self._conn.close()
@@ -229,15 +269,29 @@ class BusStore:
         tags: list[str] | None = None,
         status: str = "QUEUED",
         notify_source: str | None = None,
+        contract: dict | None = None,
     ) -> SliceRow:
         if status not in _STATUSES:
             raise ValueError(f"invalid status: {status}")
         now = utc_iso()
         tags_json = json.dumps(tags or [], ensure_ascii=False)
-        with self._lock:
+        with self.workflow_transaction():
             existing = self._conn.execute(
-                "SELECT id FROM slices WHERE id = ?", (slice_id,)
+                "SELECT * FROM slices WHERE id = ?", (slice_id,)
             ).fetchone()
+            if existing and (existing['contract'] != '{}' or contract):
+                previous = json.loads(existing['contract'] or '{}')
+                if (existing['peer'] != peer or existing['content_sha256'] != content_sha256
+                        or (contract and previous.get('return_peer') != contract['return_peer'])):
+                    raise ValueError('assignment already exists; use explicit reassignment or a new slice')
+                return SliceRow.from_row(existing)
+            if contract and contract.get('parent_slice'):
+                parent = self._conn.execute('SELECT peer,status,contract FROM slices WHERE id=?', (contract['parent_slice'],)).fetchone()
+                if not parent or parent['status'] in ('DONE', 'CANCELLED'):
+                    raise ValueError('parent must be an open assignment')
+                pc = json.loads(parent['contract'] or '{}')
+                if contract['return_peer'] not in {parent['peer'], pc.get('owner_peer')}:
+                    raise ValueError('only parent worker or owner can delegate child work')
             if existing:
                 self._conn.execute(
                     """
@@ -286,7 +340,9 @@ class BusStore:
                         now,
                     ),
                 )
-            self._conn.commit()
+            if contract:
+                self._conn.execute('UPDATE slices SET contract=? WHERE id=?', (json.dumps(contract), slice_id))
+                self._workflow_event(slice_id, 'assigned', contract['return_peer'], contract)
         row = self.get_slice(slice_id)
         assert row is not None
         return row
@@ -319,7 +375,15 @@ class BusStore:
         if status not in _STATUSES:
             raise ValueError(f"invalid status: {status}")
         now = utc_iso()
-        with self._lock:
+        with self.workflow_transaction():
+            current = self._conn.execute('SELECT * FROM slices WHERE id=?', (slice_id,)).fetchone()
+            if current and json.loads(current['contract'] or '{}'):
+                if status == 'DONE' or current['status'] == 'DONE':
+                    raise ValueError('use workflow acceptance; accepted work is immutable')
+                if status == 'RUNNING' and not (active_job or current['active_job']):
+                    raise ValueError('RUNNING requires active_job; use QUEUED for coordination')
+            if status in {'PAUSED', 'CANCELLED', 'BLOCKED'}:
+                clear_active_job = True
             if clear_active_job:
                 self._conn.execute(
                     "UPDATE slices SET status = ?, active_job = NULL, updated_at = ? WHERE id = ?",
@@ -353,6 +417,8 @@ class BusStore:
             if row is None:
                 return None
             current = SliceRow.from_row(row)
+            if current.contract:
+                raise ValueError('use team_report or team_workflow for contracted assignments')
             new_verdict = verdict if verdict is not None else current.verdict
             new_evidence = evidence if evidence is not None else current.evidence
             self._conn.execute(
@@ -414,6 +480,9 @@ class BusStore:
 
     def upsert_slice_raw(self, data: dict[str, Any]) -> None:
         """Migration/import helper — insert or replace a full slice row."""
+        existing = self.get_slice(data["id"])
+        if existing and existing.contract:
+            raise ValueError("cannot import over a contracted assignment")
         now = utc_iso()
         tags = data.get("tags") or []
         if isinstance(tags, list):

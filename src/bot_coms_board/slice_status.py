@@ -48,6 +48,7 @@ def comms_state_for_slice(
     *,
     spool_root: Path | None = None,
     peer: str | None = None,
+    return_peer: str = "pm",
 ) -> tuple[str, dict[str, Any]]:
     """Return (comms_state, detail dict) derived from spool folders only."""
     root = spool_root or DEFAULT_SPOOL_ROOT
@@ -72,7 +73,7 @@ def comms_state_for_slice(
                     detail["dead_letter"] = True
                     return COMMS_UNKNOWN, detail
 
-    pm_root = root / "pm"
+    pm_root = root / return_peer
     for loc in ("results", "inbox", "processing", "acked", "outbox", "dead-letter"):
         folder = pm_root / loc
         hit = _scan_folder(folder, slice_id)
@@ -90,7 +91,7 @@ def comms_state_for_slice(
                 return COMMS_ACKED, detail
 
     if peer:
-        outbox = root / "pm" / "outbox"
+        outbox = root / return_peer / "outbox"
         hit = _scan_folder(outbox, slice_id)
         if hit:
             detail.update(hit)
@@ -106,8 +107,10 @@ def merge_slice_view(
     spool_root: Path | None = None,
 ) -> dict[str, Any]:
     peer = row.peer if row else None
+    from bot_coms_board.store import profile_to_peer
+    return_peer = (row.contract.get("return_peer") or profile_to_peer(row.from_profile)) if row else "pm"
     comms, comms_detail = comms_state_for_slice(
-        slice_id, spool_root=spool_root, peer=peer
+        slice_id, spool_root=spool_root, peer=peer, return_peer=return_peer
     )
     out: dict[str, Any] = {
         "slice": slice_id,
@@ -122,11 +125,11 @@ def merge_slice_view(
         candidate = spool_root / peer / "results" / f"{slice_id}.json"
         if candidate.is_file():
             result_path = candidate
-        pm_candidate = spool_root / "pm" / "results" / f"{slice_id}.json"
+        pm_candidate = spool_root / return_peer / "results" / f"{slice_id}.json"
         if pm_candidate.is_file():
             result_path = pm_candidate
     elif spool_root:
-        for p in ("pm", peer or ""):
+        for p in (return_peer, peer or ""):
             if not p:
                 continue
             candidate = spool_root / p / "results" / f"{slice_id}.json"

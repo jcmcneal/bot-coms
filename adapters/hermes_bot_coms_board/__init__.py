@@ -4,6 +4,8 @@ from __future__ import annotations
 
 from bot_coms_board.tool import TEAM_BUS_SCHEMA
 from hermes_bot_coms_board.tools import (
+    TEAM_WORKFLOW_SCHEMA,
+    team_workflow,
     TEAM_ASSIGN_SCHEMA,
     TEAM_INBOX_SCHEMA,
     TEAM_REPORT_SCHEMA,
@@ -47,3 +49,7 @@ def register(ctx) -> None:
         description=TEAM_REPORT_SCHEMA.get("description", ""),
         emoji="📣",
     )
+
+    ctx.register_tool(name="team_workflow", toolset="team_bus", schema=TEAM_WORKFLOW_SCHEMA,
+                      handler=lambda args, **kw: team_workflow(args, **kw),
+                      description=TEAM_WORKFLOW_SCHEMA['description'], emoji="📋")
