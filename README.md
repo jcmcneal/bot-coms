@@ -2,7 +2,7 @@
 
 Standalone bot-to-bot messaging over a **local POSIX filesystem spool**. Delivery is at-least-once; completed handler results are replayable through the idempotency store. External side effects must be idempotent or transactionally coordinated; arbitrary effects are not guaranteed exactly once.
 
-This project does **not** depend on the Hermes A2A gateway or Open Genome. HTTP transport is post-MVP (see `docs/HTTP_ADAPTER_SKETCH.md`).
+This project does **not** depend on the Hermes A2A gateway or any product repository. HTTP transport is post-MVP (see `docs/HTTP_ADAPTER_SKETCH.md`).
 
 **Team coordination** lives in the sibling package `bot_coms_board` (same repo): `bus.sqlite` ledger, `team_assign` / `team_inbox` / `team_report` Hermes tools, and `bot-coms-board` CLI. See `docs/BOARD.md` and [`docs/WORKFLOWS.md`](docs/WORKFLOWS.md) for configurable responsibilities, frozen ownership, independent review gates and owner acceptance. The transport core never imports the board lane.
 
@@ -10,7 +10,7 @@ MVP requires a **local POSIX** disk (APFS/ext4). NFS and other shared filesystem
 
 ## Hermes team layout
 
-The repository is reusable. `~/.hermes/team` is the live deployment: it contains
+The repository is reusable. `$HERMES_HOME/team` is the live deployment: it contains
 the current participants, assignments, messages, and operator-specific settings.
 
 ```text
@@ -22,11 +22,11 @@ bot-coms/                              reusable source and documentation
 ├── docs/team/                         shared policy and daily prune procedure
 └── examples/team/                     local-settings templates
 
-~/.hermes/                             one live Hermes deployment
+$HERMES_HOME/                          one live Hermes deployment
 ├── profiles/<profile>/
 │   ├── config.yaml                    plugins, tools, model, skill directories
 │   ├── .env                           BOT_COMS_SPOOL_ROOT and BOT_COMS_PEER_ID
-│   └── memory_store.db                profile-local durable personal facts
+│   └── memory_store.db                profile-local durable facts
 ├── team/
 │   ├── workflows.json                 peer IDs, capabilities, bindings, policies
 │   ├── bus.sqlite                     assignments, contracts, reviews, outbox
@@ -36,8 +36,8 @@ bot-coms/                              reusable source and documentation
 │   └── workflow-reconcile*.log        scheduler output
 └── TEAM.md                            local constraints and escalation route
 
-~/Library/LaunchAgents/                 optional operator-owned scheduler
-└── <reconcile scheduler>               may call reconcile every minute
+<operator scheduler>/                  optional operator-owned scheduler
+└── <reconcile command>                may call reconcile every minute
 ```
 
 `workflows.json` names stable peer IDs and their capabilities. It is the directory
@@ -114,7 +114,7 @@ root acceptance sends the concise outcome to the assignment's saved origin.
    Add `agent-screen`, `agent_screen`, and narrowly scoped write settings only
    to profiles authorized to launch coding agents.
 
-3. Create `~/.hermes/team/workflows.json` from
+3. Create `$HERMES_HOME/team/workflows.json` from
    [`examples/workflows.json`](examples/workflows.json). Register the same peer
    IDs in the spool with `bot-coms init-spool --root <spool> --peers <peer-ids>`.
    Then add local TEAM and usage settings from
