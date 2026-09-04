@@ -36,9 +36,8 @@ bot-coms/                              reusable source and documentation
 │   └── workflow-reconcile*.log        scheduler output
 └── TEAM.md                            local constraints and escalation route
 
-~/Library/LaunchAgents/
-└── com.jason.bot-coms-workflow-reconcile.plist
-                                        calls reconcile every minute
+~/Library/LaunchAgents/                 optional operator-owned scheduler
+└── <reconcile scheduler>               may call reconcile every minute
 ```
 
 `workflows.json` names stable peer IDs and their capabilities. It is the directory
@@ -121,9 +120,10 @@ root acceptance sends the concise outcome to the assignment's saved origin.
    Then add local TEAM and usage settings from
    [`examples/team/`](examples/team/).
 
-4. Run `bot-coms-board reconcile` once a minute from the operator's scheduler.
-   It retries pending delivery and missed runner exits; it never starts an agent
-   or resumes historical work.
+4. Optionally run `bot-coms-board reconcile` once a minute from the operator's
+   scheduler. It retries pending delivery and missed runner exits; it never
+   starts an agent or resumes historical work. Skip it when manual recovery is
+   sufficient for the deployment.
 
 5. Smoke-test a bounded `activity="coordinate"` assignment. Verify its frozen
    contract with `team_workflow describe`, submit a report, and accept it from
