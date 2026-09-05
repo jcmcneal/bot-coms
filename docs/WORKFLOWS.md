@@ -119,12 +119,18 @@ lease creation and reclamation share a process/thread lock; lease tokens fence
 stale acknowledgements. Transport completion is persisted before result publication,
 so a reclaimed Worker delivery can republish its saved result.
 
-Run `bot-coms-board reconcile` from a scheduler every minute. It recovers completed
+Each `team_inbox` / `bot-coms-board inbox` check reclaims the caller's stale leases
+and runs one reconciliation pass before reading messages. Recovery failures are
+returned in `reconciliation` without preventing otherwise available inbox work.
+No scheduler is needed while agents keep checking their inboxes; when all agents
+are idle, recovery waits for the next check. Retry backoff still applies.
+
+Reconciliation recovers completed
 **contracted** jobs whose runner notification was missed, reclaims stale processing
 leases for pending deliveries, and retries outstanding wakes. It does not create
 coding-agent jobs, restart old threads, or rewrite historical slice ownership.
-`scripts/workflow-reconcile.sh` is the scheduler entry point; install it into the
-operator's existing scheduler rather than running another LLM polling loop.
+For recovery during idle periods, optionally run `bot-coms-board reconcile` from
+an existing scheduler using `scripts/workflow-reconcile.sh`.
 External providers may receive a duplicate after a crash between successful send
 and recording success; end-to-end exactly-once delivery requires provider support.
 

@@ -96,6 +96,7 @@ def cmd_inbox(ns: argparse.Namespace) -> int:
             "success": True,
             "peer": result.peer,
             "reclaimed": result.reclaimed,
+            "reconciliation": result.reconciliation,
             "decisions": [
                 {
                     "message_id": d.message_id,

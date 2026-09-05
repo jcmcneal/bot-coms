@@ -269,6 +269,54 @@ def test_reconcile_recovers_exit_before_running_stamp(loop,monkeypatch,tmp_path)
     assert 'keep-session' in row.evidence
 
 
+def test_inbox_recovers_missed_exit_and_receives_report(loop, monkeypatch, tmp_path):
+    c, _ = loop
+    assign(c)
+    home = tmp_path / 'home'
+    monkeypatch.setenv('HOME', str(home))
+    sidecar = home / '.hermes/agent-screen/job.json'
+    sidecar.parent.mkdir(parents=True)
+    tee = home / '.hermes/job.out'
+    tee.write_text('EXIT:0\n')
+    sidecar.write_text(json.dumps({'slice': 'S1', 'profile': 'builder',
+                                  'mode': 'write', 'out_path': str(tee)}))
+    c.store.set_status('S1', 'RUNNING', active_job='job')
+
+    result = c.process_inbox('lead')
+
+    assert len(result.reconciliation['jobs']) == 1
+    assert any(d.slice_id == 'S1' and d.intent == 'report' for d in result.decisions)
+    row = c.store.get_slice('S1')
+    assert row.active_job is None and row.verdict == 'EXECUTED'
+    assert row.contract['submission'] is None
+    assert c.process_inbox('lead').reconciliation['jobs'] == []
+
+
+def test_inbox_retries_pending_assignment_before_reading(loop):
+    c, _ = loop
+    # Simulate a committed assignment whose dispatch never ran.
+    with patch.object(c, 'flush_deliveries', return_value={}):
+        assign(c)
+    assert not list((c.spool_root / 'builder/inbox').glob('*.json'))
+
+    result = c.process_inbox('builder')
+
+    assert result.reconciliation['delivered'] == 1
+    assert len(result.decisions) == 1
+    assert result.decisions[0].disposition == 'launch_agent'
+    # A second check must not duplicate the live claim.
+    assert c.process_inbox('builder').decisions == []
+
+
+def test_inbox_remains_available_when_reconciliation_fails(loop):
+    c, _ = loop
+    assign(c)
+    with patch.object(c, 'reconcile', side_effect=OSError('recovery unavailable')):
+        result = c.process_inbox('builder')
+    assert result.reconciliation == {'error': 'recovery unavailable'}
+    assert result.decisions[0].disposition == 'launch_agent'
+
+
 def test_lost_processing_worker_is_reclaimed_and_woken(loop,monkeypatch):
     import time
     c,_=loop;assign(c)

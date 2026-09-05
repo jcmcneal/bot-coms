@@ -116,7 +116,8 @@ def team_assign(args: dict | None = None, **kwargs) -> str:
 TEAM_INBOX_SCHEMA = {
     "name": "team_inbox",
     "description": (
-        "Process bot-coms inbox for this peer: claim, validate payload, join SQL, "
+        "Reclaim stale leases and reconcile missed job exits and pending deliveries, "
+        "then process bot-coms inbox for this peer: claim, validate payload, join SQL, "
         "verify assignment digest for assign, drain responses and ack/fail receipts, "
         "and auto-handle report_only/report/cancel. Returns dispatch "
         "decisions (assign → launch_agent bundle). Assign stays claimed until "
@@ -151,6 +152,7 @@ def team_inbox(args: dict | None = None, **kwargs) -> str:
                 "success": True,
                 "peer": result.peer,
                 "reclaimed": result.reclaimed,
+                "reconciliation": result.reconciliation,
                 "decisions": [
                     {
                         "message_id": d.message_id,

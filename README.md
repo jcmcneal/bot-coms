@@ -120,10 +120,11 @@ root acceptance sends the concise outcome to the assignment's saved origin.
    Then add local TEAM and usage settings from
    [`examples/team/`](examples/team/).
 
-4. Optionally run `bot-coms-board reconcile` once a minute from the operator's
-   scheduler. It retries pending delivery and missed runner exits; it never
-   starts an agent or resumes historical work. Skip it when manual recovery is
-   sufficient for the deployment.
+4. Each `team_inbox` check reclaims stale leases for that peer and reconciles
+   pending delivery and missed runner exits before reading messages. No scheduler
+   is required if recovery can wait for the next inbox check. Optionally run
+   `bot-coms-board reconcile` from an existing scheduler for recovery while the
+   team is idle. Recovery never starts coding-agent jobs or resumes historical work.
 
 5. Smoke-test a bounded `activity="coordinate"` assignment. Verify its frozen
    contract with `team_workflow describe`, submit a report, and accept it from

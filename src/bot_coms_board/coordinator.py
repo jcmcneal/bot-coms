@@ -83,6 +83,7 @@ class InboxResult:
     peer: str
     reclaimed: list[str] = field(default_factory=list)
     decisions: list[InboxDecision] = field(default_factory=list)
+    reconciliation: dict[str, Any] = field(default_factory=dict)
 
 
 class TeamCoordinator:
@@ -618,6 +619,12 @@ class TeamCoordinator:
         result = InboxResult(peer=peer)
         try:
             result.reclaimed = client.reclaim_stale()
+            # Recover before listing so replayed messages are visible in this check.
+            # An unrelated recovery failure must not block an available inbox.
+            try:
+                result.reconciliation = self.reconcile()
+            except Exception as exc:
+                result.reconciliation = {'error': str(exc)}
             processed = 0
             for envelope in client.receive(limit=limit):
                 claimed = client.claim(msg_id=envelope.id)
