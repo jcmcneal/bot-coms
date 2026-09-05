@@ -168,12 +168,17 @@ def test_internal_report_does_not_notify_origin(loop,monkeypatch):
     assert sends==[]
 
 
-def test_ack_is_a_receipt_not_a_board_command(loop):
+@pytest.mark.parametrize(
+    ('envelope_type', 'intent'),
+    [('response', 'ack'), ('response', 'fail'), ('event', 'ack'), ('event', 'fail')],
+)
+def test_terminal_payload_is_a_receipt_even_if_envelope_is_mistyped(loop, envelope_type, intent):
     c,_=loop;client=Client(c.spool_root,'builder')
-    client.send('lead','response',{'intent':'ack','status':'RUNNING','slice':'S1'})
+    client.send('lead',envelope_type,{'intent':intent,'status':'RUNNING','slice':'S1'})
     client.close()
     d=c.process_inbox('lead').decisions[0]
     assert d.disposition=='receipt' and d.error is None
+    assert d.intent==intent
     assert not list((c.spool_root/'builder/inbox').glob('*.json'))
 
 

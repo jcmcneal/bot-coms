@@ -11,8 +11,9 @@ policies, acceptance, reassignment, schema migration and recovery commands.
 
 - `team_assign`: register and durably dispatch; explicit activity, optional policy
   and parent_slice. Sender comes from runtime identity, never a default PM role.
-- `team_inbox`: claim and parse commands; responses are receipts. Returns the
-  assignment contract, message ID and lease token. Coordinate in Hermes; an
+- `team_inbox`: claim and parse commands; responses and `ack`/`fail` payloads are
+  terminal receipts even if an adapter mislabeled their envelope type. Returns
+  the assignment contract, message ID and lease token. Coordinate in Hermes; an
   execution activity may require a coding agent.
 - `team_report`: submit actual outcome/evidence to the frozen return peer and
   required reviewers. Process exit alone is not an accepted delivery.
@@ -24,6 +25,13 @@ Intents remain assign/report_only/report/cancel. Bodies live in context files;
 contracts and individual reviewer decisions live in SQLite. Legacy text PINGs and
 unknown schema versions are rejected. Internal envelopes carry `delivery=internal`;
 origin metadata never authorizes an early external broadcast.
+
+The stored content digest fences assignment dispatch. `report_only` is a
+status/context refresh: it reads the current context file without rejecting an
+expected prose update as a stale assignment, and it never launches work. Changing
+the assigned work itself still requires a new slice or explicit reassignment.
+Use `report_only` plus the context file for an in-scope context refresh; custom
+command intents such as `scope_update` remain invalid.
 
 RUNNING requires an actual job handle for contracted work. PAUSED preserves the
 resumable session in its sidecar while clearing active execution. Cancel stops

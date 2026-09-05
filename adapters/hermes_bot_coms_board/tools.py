@@ -117,7 +117,8 @@ TEAM_INBOX_SCHEMA = {
     "name": "team_inbox",
     "description": (
         "Process bot-coms inbox for this peer: claim, validate payload, join SQL, "
-        "verify digest, auto-handle report_only/cancel/fail. Returns dispatch "
+        "verify assignment digest for assign, drain responses and ack/fail receipts, "
+        "and auto-handle report_only/report/cancel. Returns dispatch "
         "decisions (assign → launch_agent bundle). Assign stays claimed until "
         "bot_coms_ack after agent_screen + team_bus status."
     ),

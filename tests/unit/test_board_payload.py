@@ -24,6 +24,11 @@ class TestParsePayload:
         p = parse_payload({"intent": "report_only", "slice": "SMOKE-1"})
         assert p.intent == "report_only"
 
+    def test_rejects_undocumented_update_intent(self):
+        with pytest.raises(PayloadError) as exc:
+            parse_payload({"intent": "scope_update", "slice": "SMOKE-1"})
+        assert exc.value.code == "INVALID_INTENT"
+
     def test_rejects_legacy_text(self):
         with pytest.raises(PayloadError) as exc:
             parse_payload({"text": "PING read /Users/jason/.hermes/team/BUS.md item S9"})

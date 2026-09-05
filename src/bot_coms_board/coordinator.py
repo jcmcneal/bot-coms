@@ -15,6 +15,7 @@ from bot_coms.types import ClaimedMessage
 
 from bot_coms_board.payload import (
     PayloadError,
+    RECEIPT_INTENTS,
     SlicePayload,
     parse_payload,
     sha256_assignment_spec,
@@ -337,22 +338,25 @@ class TeamCoordinator:
         }
 
     def _resolve_slice_context(
-        self, payload: SlicePayload, *, skip_digest: bool = False
+        self,
+        payload: SlicePayload,
+        *,
+        verify_digest: bool = True,
+        require_assignment: bool = True,
     ) -> tuple[dict[str, Any] | None, str | None, str | None]:
         row = self.store.get_slice(payload.slice)
         if row is None:
             return None, "slice not registered", "SLICE_NOT_FOUND"
-        if skip_digest:
-            return row.to_dict(), None, None
-        if not skip_digest:
+        if verify_digest:
             try:
                 verify_content_digest(row.assignment_path, row.content_sha256)
             except PayloadError as exc:
                 return row.to_dict(), str(exc), exc.code
-        try:
-            read_assignment_body(row.assignment_path)
-        except OSError as exc:
-            return row.to_dict(), str(exc), "MISSING_ASSIGNMENT"
+        if require_assignment:
+            try:
+                read_assignment_body(row.assignment_path)
+            except OSError as exc:
+                return row.to_dict(), str(exc), "MISSING_ASSIGNMENT"
         return row.to_dict(), None, None
 
     @staticmethod
@@ -377,7 +381,7 @@ class TeamCoordinator:
         claimed: ClaimedMessage,
         decision: InboxDecision,
     ) -> None:
-        if decision.handled and decision.ack_result is not None:
+        if decision.handled:
             client.ack(claimed, result=decision.ack_result)
 
     def process_claim(
@@ -391,11 +395,19 @@ class TeamCoordinator:
         if auto_handle_intents is None:
             auto_handle_intents = frozenset({"report_only", "report", "cancel"})
         msg_id = claimed.envelope.id
-        if claimed.envelope.type == 'response':
-            return InboxDecision(message_id=msg_id, slice_id=claimed.envelope.correlation_id,
-                                 intent='receipt', disposition='receipt', handled=True, ack_result={})
+        raw_payload = claimed.envelope.payload
+        receipt_intent = raw_payload.get("intent") if isinstance(raw_payload, dict) else None
+        if claimed.envelope.type == "response" or receipt_intent in RECEIPT_INTENTS:
+            slice_id = raw_payload.get("slice") if isinstance(raw_payload, dict) else None
+            return InboxDecision(
+                message_id=msg_id,
+                slice_id=slice_id if isinstance(slice_id, str) else claimed.envelope.correlation_id,
+                intent=receipt_intent if receipt_intent in RECEIPT_INTENTS else "receipt",
+                disposition="receipt",
+                handled=True,
+            )
         try:
-            payload = parse_payload(claimed.envelope.payload)
+            payload = parse_payload(raw_payload)
         except PayloadError as exc:
             ack = self._fail_ack_payload(code=exc.code, message=str(exc))
             return InboxDecision(
@@ -442,7 +454,8 @@ class TeamCoordinator:
 
         row_dict, err, code = self._resolve_slice_context(
             payload,
-            skip_digest=payload.intent == "report",
+            verify_digest=payload.intent not in {"report_only", "report"},
+            require_assignment=payload.intent != "report",
         )
         if err:
             if payload.intent == 'assign' and row_dict and row_dict.get('contract'):
@@ -466,7 +479,11 @@ class TeamCoordinator:
                 handled=True,
             )
         assert row_dict is not None
-        body = read_assignment_body(row_dict["assignment_path"]) if payload.intent != "report" else ""
+        body = (
+            read_assignment_body(row_dict["assignment_path"])
+            if payload.intent != "report"
+            else ""
+        )
 
         if payload.intent == "cancel":
             c = row_dict.get('contract') or {}
