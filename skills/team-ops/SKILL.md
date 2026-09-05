@@ -1,7 +1,7 @@
 ---
 name: team-ops
 description: "Hermes team coordination — role-independent assignments, evidence, reviews and acceptance."
-version: 2.0.0
+version: 2.1.0
 platforms: [macos]
 tags: [hermes, team, bot-coms, board]
 ---
@@ -15,7 +15,9 @@ Team configuration is `~/.hermes/team/workflows.json`.
 ## Dispatch
 
 1. Write an assignment letter under `~/.hermes/team/context/` with outcome,
-   acceptance criteria, constraints and evidence requirements.
+   acceptance criteria, constraints and an assigner-created completion checklist.
+   Follow [checklist ownership and reporting](../../docs/team/CHECKLISTS.md);
+   map delegated items to parent obligations before dispatch.
 2. Call `team_assign` with the explicit activity: coordinate, implement, research
    or review. Select a policy when the default does not fit. For delegated work,
    set `parent_slice` to the assignment you are delivering.
@@ -23,7 +25,7 @@ Team configuration is `~/.hermes/team/workflows.json`.
 
 ## Receive
 
-1. Call `team_inbox`; inspect the frozen contract and activity.
+1. Call `team_inbox`; inspect the frozen contract, activity and completion checklist.
 2. Coordinate assignments in Hermes. Launch a coding agent only when the explicit
    implementation, research or review task needs one. Role titles do not decide.
 3. For a launched job, stamp `team_bus status RUNNING` with its real `active_job`,
@@ -36,6 +38,9 @@ Team configuration is `~/.hermes/team/workflows.json`.
   delivery or acceptance. Read the actual output before reporting a conclusion.
 - Call `team_report` with the outcome and concrete evidence. Internal reports go
   to the actual assigner and required reviewers, never directly to the origin.
+- Report a disposition for every checklist item. On child results and recovery,
+  the receiving peer verifies evidence and updates its own remaining obligations
+  using the [checklist policy](../../docs/team/CHECKLISTS.md).
 - Use `team_workflow describe` to inspect revision, owner, reviewers and history.
 - Assigned reviewers use `team_workflow review` with gate, revision,
   APPROVED/REJECTED and independent evidence. Rework requires fresh reviews.

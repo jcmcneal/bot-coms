@@ -1,6 +1,7 @@
 # Shared team policy
 
-Read [profile rules](PROFILE-RULES.md), [delivery rules](DELIVERY.md) and the
+Read [profile rules](PROFILE-RULES.md), [assignment checklists](CHECKLISTS.md),
+[delivery rules](DELIVERY.md) and the
 [team-ops skill](../../skills/team-ops/SKILL.md). Local constraints live in
 `~/.hermes/TEAM.md`; runtime settings and state stay in Hermes. See
 [document ownership](README.md) for locations and precedence.

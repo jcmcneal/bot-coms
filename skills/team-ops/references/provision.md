@@ -41,6 +41,13 @@ Postures describe permitted work, not titles or reporting parents:
 | auditor | Independently assess submitted artifacts | ask/plan |
 | researcher | Investigate claims and cite primary sources | ask/plan |
 
+Keep the template's references to local TEAM.md and `team-ops`. Verify that local
+TEAM.md links to this checkout's shared TEAM.md, which loads the
+[assignment checklist policy](../../../docs/team/CHECKLISTS.md). Every new peer
+inherits both duties: report against received checklists and create a checklist
+for each child it assigns. No fixed manager or project workflow belongs in SOUL.
+Do not copy policy or another peer's active checklist into the profile.
+
 Leave MEMORY.md and USER.md empty or absent. Store durable personal facts only in
 the owning profile’s fact store, following [profile rules](../../../docs/team/PROFILE-RULES.md). Keep
 instructions in their source document, runtime settings in config, and task state
@@ -117,8 +124,11 @@ execution first. See [workflow configuration](../../../docs/WORKFLOWS.md).
   shared skill, profile-local memory and available tools: `team_assign`,
   `team_inbox`, `team_report`, `team_workflow`, and `bot_coms_ack`.
 - From the assigning peer, create one explicit `activity="coordinate"` smoke
-  assignment to the new peer with no product edits. Ask it
-  to report its responsibility and return path from the contract. It must handle
+  assignment to the new peer with no product edits. The assigner writes checklist
+  items requiring the peer to identify its responsibility and frozen return path,
+  and to draft (without dispatching) a child checklist mapped to a parent item.
+  Require evidence and an item-by-item result; verify those results on return.
+  It must handle
   this in Hermes without launching an agent, ACK with the inbox lease token, and
   submit evidence through `team_report`.
 - Inspect `team_workflow describe`: correct sender/return peer, owner, activity and
@@ -128,8 +138,10 @@ execution first. See [workflow configuration](../../../docs/WORKFLOWS.md).
   For an executor or newly
   bound reviewer, also check the intended delivery policy's capabilities and
   independent gates before dispatching implementation.
-- Reuse the existing once-a-minute `bot-coms-board reconcile` service. Do not add
-  per-profile pulse cron, LLM polling, A2A or historical-task resume jobs.
+- Inbox checks run reconciliation; if the deployment also has a recovery
+  scheduler, reuse it. Do not add per-profile pulse cron, LLM polling, A2A or
+  historical-task resume jobs. Idle recovery waits for a trigger without a scheduler.
 
 Provisioning is complete when the fresh teammate can receive, acknowledge and
-report a bounded assignment through its contract, with no inherited memories.
+report a bounded assignment through its contract, account for every checklist
+item, and draft a delegated checklist the assigner verifies, with no inherited memories.

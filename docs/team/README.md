@@ -8,6 +8,7 @@ operator's choices and runtime state.
 |---|---|
 | [PROFILE-RULES.md](PROFILE-RULES.md) | Authorization, communication and memory storage |
 | [TEAM.md](TEAM.md) | Shared work and escalation constraints |
+| [CHECKLISTS.md](CHECKLISTS.md) | Assigner-created task checklists, delegation and verification |
 | [DELIVERY.md](DELIVERY.md) | Delivery sequence |
 | [PRUNE.md](PRUNE.md) | On-demand maintenance procedure |
 | [team-ops skill](../../skills/team-ops/SKILL.md) | Assignment and review procedure |
