@@ -9,6 +9,7 @@ import pytest
 
 from bot_coms import Client
 from bot_coms.atomic import read_json
+from bot_coms.doorbell import build_wake_query
 from bot_coms.spool import init_spool
 
 from bot_coms_board.coordinator import TeamCoordinator
@@ -26,6 +27,26 @@ def _read_inbox_envelope(spool: Path, peer: str) -> dict:
     files = sorted(inbox.glob("*.json"))
     assert len(files) == 1
     return read_json(files[0])
+
+
+def _register_slice(
+    coord: TeamCoordinator,
+    team_root: Path,
+    slice_id: str,
+    *,
+    peer: str = "swe",
+) -> None:
+    ctx = team_root / "context" / f"{slice_id}.md"
+    ctx.parent.mkdir(parents=True, exist_ok=True)
+    ctx.write_text("unfinished work\n", encoding="utf-8")
+    coord.register_slice(
+        slice_id=slice_id,
+        title=f"work {slice_id}",
+        assignment_path=str(ctx),
+        to_profile="software-engineer",
+        from_profile="project-manager",
+        peer=peer,
+    )
 
 
 @pytest.fixture
@@ -142,6 +163,108 @@ class TestCoordinator:
         assert out["open_incomplete"] is True
         assert out["incomplete_reason"] == "unfinished_checklist_no_live_job"
         assert out["checklist_summary"]["unfinished"] == 1
+
+    def test_wake_incomplete_doorbells_assignee_peer(self, coord_env, monkeypatch):
+        from unittest.mock import patch
+
+        team_root, spool = coord_env
+        coord = TeamCoordinator(team_root=team_root, spool_root=spool)
+        _register_slice(coord, team_root, "WAKE-ONE")
+        monkeypatch.setenv("BOT_COMS_DOORBELL", "1")
+        wakes = []
+
+        with patch("bot_coms.doorbell._wake_runner", lambda profile, peer, env: wakes.append((profile, peer, env))):
+            out = coord.wake_incomplete()
+
+        assert [(peer, env.payload["intent"]) for _profile, peer, env in wakes] == [
+            ("swe", "open_incomplete")
+        ]
+        assert wakes[0][2].payload["slices"] == ["WAKE-ONE"]
+        query = build_wake_query(wakes[0][2])
+        assert "Call team_inbox" in query
+        assert "WAKE-ONE" in query
+        assert "do not treat it as a new assignment" in query
+        assert out["woken"] == {
+            "count": 1,
+            "peers": [{"peer": "swe", "slices": ["WAKE-ONE"]}],
+        }
+        assert out["errors"] == []
+
+    def test_wake_incomplete_skips_terminal_and_live_slices(self, coord_env, monkeypatch):
+        from unittest.mock import patch
+
+        team_root, spool = coord_env
+        coord = TeamCoordinator(team_root=team_root, spool_root=spool)
+        for slice_id in ("DONE-SLICE", "CANCELLED-SLICE", "LIVE-SLICE"):
+            _register_slice(coord, team_root, slice_id)
+        coord.store.set_status("DONE-SLICE", "DONE")
+        coord.store.set_status("CANCELLED-SLICE", "CANCELLED")
+        coord.store.set_status("LIVE-SLICE", "RUNNING", active_job="live-job")
+        monkeypatch.setenv("BOT_COMS_DOORBELL", "1")
+        wakes = []
+
+        with patch("bot_coms.doorbell._wake_runner", lambda *args: wakes.append(args)):
+            out = coord.wake_incomplete()
+
+        assert wakes == []
+        assert out["open_incomplete"] == {"count": 0, "slices": []}
+        assert out["woken"] == {"count": 0, "peers": []}
+
+    def test_wake_incomplete_dedupes_multiple_slices_by_peer(self, coord_env, monkeypatch):
+        from unittest.mock import patch
+
+        team_root, spool = coord_env
+        coord = TeamCoordinator(team_root=team_root, spool_root=spool)
+        _register_slice(coord, team_root, "WAKE-A")
+        _register_slice(coord, team_root, "WAKE-B")
+        monkeypatch.setenv("BOT_COMS_DOORBELL", "1")
+        wakes = []
+
+        with patch("bot_coms.doorbell._wake_runner", lambda profile, peer, env: wakes.append((peer, env))):
+            out = coord.wake_incomplete()
+
+        assert len(wakes) == 1
+        assert wakes[0][0] == "swe"
+        assert wakes[0][1].payload["slices"] == ["WAKE-A", "WAKE-B"]
+        assert out["woken"]["peers"] == [
+            {"peer": "swe", "slices": ["WAKE-A", "WAKE-B"]}
+        ]
+
+    def test_reconcile_does_not_wake_open_incomplete_slices(self, coord_env, monkeypatch):
+        from unittest.mock import patch
+
+        team_root, spool = coord_env
+        coord = TeamCoordinator(team_root=team_root, spool_root=spool)
+        _register_slice(coord, team_root, "RECONCILE-NO-WAKE")
+        monkeypatch.setenv("BOT_COMS_DOORBELL", "1")
+        wakes = []
+
+        with patch("bot_coms.doorbell._wake_runner", lambda *args: wakes.append(args)):
+            out = coord.reconcile()
+
+        assert out["open_incomplete"]["count"] == 1
+        assert wakes == []
+
+    def test_wake_cli_runs_one_shot_kick(self, coord_env, monkeypatch, capsys):
+        from unittest.mock import patch
+
+        from bot_coms_board.cli import main
+
+        team_root, spool = coord_env
+        coord = TeamCoordinator(team_root=team_root, spool_root=spool)
+        _register_slice(coord, team_root, "CLI-WAKE")
+        coord.store.close()
+        monkeypatch.setenv("BOT_COMS_DOORBELL", "1")
+        wakes = []
+
+        with patch("bot_coms.doorbell._wake_runner", lambda profile, peer, env: wakes.append(peer)):
+            status = main(["--team-root", str(team_root), "wake"])
+
+        assert status == 0
+        assert wakes == ["swe"]
+        output = json.loads(capsys.readouterr().out)
+        assert output["success"] is True
+        assert output["woken"]["count"] == 1
 
     def test_report_only_auto_handled(self, coord_env):
         team_root, spool = coord_env

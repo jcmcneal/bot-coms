@@ -127,10 +127,22 @@ are idle, recovery waits for the next check. Retry backoff still applies.
 
 Reconciliation recovers completed
 **contracted** jobs whose runner notification was missed, reclaims stale processing
-leases for pending deliveries, and retries outstanding wakes. It does not create
-coding-agent jobs, restart old threads, or rewrite historical slice ownership.
+leases for pending deliveries, and retries outstanding delivery wakes. Reconciliation
+is delivery-only: it does not doorbell assignees merely because a slice is
+`open_incomplete`, create coding-agent jobs, restart old threads, or rewrite historical
+slice ownership.
 For recovery during idle periods, optionally run `bot-coms-board reconcile` from
 an existing scheduler using `scripts/workflow-reconcile.sh`.
+
+After the Hermes gateway has started, run `bot-coms-board wake` once (or invoke
+`scripts/workflow-wake.sh` from the gateway's post-start hook). This one-shot kick
+finds slices whose board view reports `open_incomplete` and doorbells each slice's
+assignee peer once, even when that peer owns several such slices. The synthetic
+wake tells the peer to call `team_inbox`; it neither enqueues an assignment nor
+starts an agent. Do not run the wake command from cron or a minute loop. There is
+no persistent cooldown or cross-process deduplication because the command is
+intended to run once per gateway start.
+
 External providers may receive a duplicate after a crash between successful send
 and recording success; end-to-end exactly-once delivery requires provider support.
 

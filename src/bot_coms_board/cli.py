@@ -213,6 +213,16 @@ def cmd_workflow(ns):
         coord.store.close()
 
 
+def cmd_wake(ns: argparse.Namespace) -> int:
+    coord = _coord(ns)
+    try:
+        result = coord.wake_incomplete()
+    finally:
+        coord.store.close()
+    _json_print({"success": not result["errors"], **result})
+    return 1 if result["errors"] else 0
+
+
 def main(argv: list[str] | None = None) -> int:
     parser = argparse.ArgumentParser(prog="bot-coms-board")
     parser.add_argument(
@@ -314,6 +324,8 @@ def main(argv: list[str] | None = None) -> int:
     p.set_defaults(func=cmd_workflow)
     p = sub.add_parser('reconcile', help='Replay durable pending deliveries without launching coding agents')
     p.set_defaults(func=lambda ns: (_json_print(_coord(ns).reconcile()) or 0))
+    p = sub.add_parser('wake', help='Doorbell open-incomplete assignees once after gateway startup')
+    p.set_defaults(func=cmd_wake)
 
     ns = parser.parse_args(argv)
     previous = {key:os.environ.get(key) for key in ('BOT_COMS_TEAM_ROOT','BOT_COMS_SPOOL_ROOT')}
