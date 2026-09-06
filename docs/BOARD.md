@@ -20,6 +20,14 @@ policies, acceptance, reassignment, schema migration and recovery commands.
 - `team_workflow`: describe, review, accept, reassign, reconcile.
 - `team_bus`: inspect/status/log and legacy CRUD; cannot bypass new acceptance gates.
 
+Slice/list views and workflow describe expose computed `open_incomplete` and
+`incomplete_reason` fields. A parseable assignment checklist also includes a
+compact `checklist_summary`. An unfinished checklist with no `active_job` remains
+open; DONE/CANCELLED slices and slices with live jobs are not flagged. If a
+checklist is absent or cannot be parsed, an open ledger status with no job remains
+visible through the same signal. Reconcile reports a summary of these slices but
+does not launch, accept or change them.
+
 The lean envelope is `{"schema_version":"1.0","intent":"assign","slice":"S1"}`.
 Intents remain assign/report_only/report/cancel. Bodies live in context files;
 contracts and individual reviewer decisions live in SQLite. Legacy text PINGs and

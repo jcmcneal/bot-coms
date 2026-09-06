@@ -21,7 +21,7 @@ from bot_coms_board.payload import (
     sha256_assignment_spec,
     verify_content_digest,
 )
-from bot_coms_board.slice_status import merge_slice_view
+from bot_coms_board.slice_status import incomplete_slice_view, merge_slice_view
 from bot_coms_board.workflow import resolve_contract, load_config
 from bot_coms_board.store import BusStore, open_store, profile_to_peer, team_root_from_env
 
@@ -222,7 +222,26 @@ class TeamCoordinator:
                 completed.append({'job': stale_job, 'slice': row.id, 'recovered': True, 'reason': 'sidecar_missing'})
             except (OSError, ValueError) as exc:
                 completed.append({'job':row.active_job, 'error':str(exc)})
-        return {'jobs': completed, **self.flush_deliveries()}
+        delivery = self.flush_deliveries()
+        incomplete = []
+        for row in self.store.list_slices(limit=10000):
+            fields = incomplete_slice_view(row)
+            if fields["open_incomplete"]:
+                incomplete.append(
+                    {
+                        "slice": row.id,
+                        "status": row.status,
+                        **fields,
+                    }
+                )
+        return {
+            'jobs': completed,
+            **delivery,
+            'open_incomplete': {
+                'count': len(incomplete),
+                'slices': incomplete,
+            },
+        }
 
     def flush_deliveries(self) -> dict:
         import fcntl
@@ -660,7 +679,11 @@ class TeamCoordinator:
         if row is None:
             raise ValueError('slice not found')
         if action == 'describe':
-            return {'row': row.to_dict(), 'history': self.store.workflow_history(slice_id)}
+            return {
+                'row': row.to_dict(),
+                **incomplete_slice_view(row),
+                'history': self.store.workflow_history(slice_id),
+            }
         if action == 'review':
             self.store.record_review(slice_id, actor=actor, gate=args['gate'],
                                      decision=args['decision'], evidence=args['evidence'], revision=args['revision'])
