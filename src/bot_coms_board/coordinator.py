@@ -243,6 +243,61 @@ class TeamCoordinator:
             },
         }
 
+    def wake_incomplete(self) -> dict[str, Any]:
+        """Doorbell each peer with open incomplete slices once per invocation."""
+        from bot_coms.doorbell import ring
+        from bot_coms.envelope import new_envelope
+        from bot_coms.types import SystemClock
+
+        by_peer: dict[str, list[dict[str, Any]]] = {}
+        for row in self.store.list_slices(limit=10000):
+            fields = incomplete_slice_view(row)
+            if not fields["open_incomplete"]:
+                continue
+            by_peer.setdefault(row.peer, []).append(
+                {
+                    "slice": row.id,
+                    "status": row.status,
+                    "incomplete_reason": fields["incomplete_reason"],
+                }
+            )
+
+        woken: list[dict[str, Any]] = []
+        errors: list[dict[str, str]] = []
+        clock = SystemClock()
+        for peer, slices in by_peer.items():
+            slice_ids = [item["slice"] for item in slices]
+            env = new_envelope(
+                from_peer="bot-coms-board",
+                to=peer,
+                msg_type="event",
+                payload={
+                    "intent": "open_incomplete",
+                    "slice": slice_ids[0],
+                    "slices": slice_ids,
+                },
+                clock=clock,
+                ttl_s=300,
+            )
+            try:
+                ring(env)
+            except Exception as exc:
+                errors.append({"peer": peer, "error": str(exc)})
+                continue
+            woken.append({"peer": peer, "slices": slice_ids})
+
+        return {
+            "open_incomplete": {
+                "count": sum(len(slices) for slices in by_peer.values()),
+                "slices": [item for slices in by_peer.values() for item in slices],
+            },
+            "woken": {
+                "count": len(woken),
+                "peers": woken,
+            },
+            "errors": errors,
+        }
+
     def flush_deliveries(self) -> dict:
         import fcntl
         lock_path = self.team_root / 'workflow-relay.lock'

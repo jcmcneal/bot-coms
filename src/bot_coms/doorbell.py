@@ -172,6 +172,21 @@ def build_wake_query(env: Envelope) -> str:
                 "Stamp RUNNING with the actual job before acknowledging a launch. "
                 "Use team_workflow describe for required reviewers and owner. End turn after dispatch.\n")
 
+    if intent == "open_incomplete":
+        raw_slices = payload.get("slices")
+        slices = (
+            [str(item) for item in raw_slices if str(item).strip()]
+            if isinstance(raw_slices, list)
+            else ([slice_id] if slice_id else [])
+        )
+        listed = ", ".join(slices) or "unknown"
+        return (
+            f"Post-start open_incomplete kick for peer {env.to}: slices {listed}. "
+            "Call team_inbox, then use team_workflow describe to inspect and resume your assigned slices. "
+            "This kick is coordination only; do not treat it as a new assignment or automatically launch "
+            "a coding agent. End turn after coordinating the unfinished work.\n"
+        )
+
     line = _payload_summary(payload)
     parts = [
         f"bot-coms mail for peer {env.to} (from {env.from_peer}).",
