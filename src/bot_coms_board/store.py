@@ -390,7 +390,7 @@ class BusStore(WorkflowLedger):
                         self._save_contract(slice_id, contract)
                         self._workflow_event(slice_id, 'execution_started', current['peer'],
                                              {'job':active_job, 'revision':contract['revision']})
-            if status in {'PAUSED', 'CANCELLED', 'BLOCKED'}:
+            if status in {'QUEUED', 'PAUSED', 'CANCELLED', 'BLOCKED'}:
                 clear_active_job = True
             if clear_active_job:
                 self._conn.execute(

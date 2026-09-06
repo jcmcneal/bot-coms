@@ -209,6 +209,17 @@ class TeamCoordinator:
                     continue
                 if parse_exit_code(tee_path_for(row.active_job, sidecar)) != 'unknown':
                     completed.append(job_done(row.active_job, team_root=self.team_root, spool_root=self.spool_root))
+            except FileNotFoundError as exc:
+                stale_job = row.active_job
+                self.store.set_status(row.id, 'QUEUED')
+                with self.store.workflow_transaction():
+                    self.store._workflow_event(
+                        row.id,
+                        'dead_running_recovered',
+                        row.peer,
+                        {'job': stale_job, 'reason': 'sidecar_missing', 'error': str(exc)},
+                    )
+                completed.append({'job': stale_job, 'slice': row.id, 'recovered': True, 'reason': 'sidecar_missing'})
             except (OSError, ValueError) as exc:
                 completed.append({'job':row.active_job, 'error':str(exc)})
         return {'jobs': completed, **self.flush_deliveries()}

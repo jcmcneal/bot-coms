@@ -13,6 +13,7 @@ from bot_coms.spool import init_spool
 
 from bot_coms_board.coordinator import TeamCoordinator
 from bot_coms_board.handler import make_team_handler
+from bot_coms_board.job_done import sidecar_path
 from bot_coms_board.payload import SlicePayload, sha256_assignment_spec
 
 
@@ -39,6 +40,70 @@ def coord_env(tmp_path: Path, monkeypatch):
 
 
 class TestCoordinator:
+    def test_reconcile_recovers_dead_running_when_sidecar_missing(self, coord_env, tmp_path, monkeypatch):
+        team_root, spool = coord_env
+        monkeypatch.setenv("HOME", str(tmp_path / "home"))
+        ctx = team_root / "context" / "S20.md"
+        ctx.parent.mkdir(parents=True)
+        ctx.write_text("recover me\n", encoding="utf-8")
+
+        coord = TeamCoordinator(team_root=team_root, spool_root=spool)
+        coord.assign(
+            slice_id="S20",
+            to_peer="swe",
+            title="dead-running recover",
+            assignment_path=str(ctx),
+        )
+        coord.store.set_status("S20", "RUNNING", active_job="job-missing-sidecar")
+
+        out = coord.reconcile()
+
+        row = coord.store.get_slice("S20")
+        assert row is not None
+        assert row.status == "QUEUED"
+        assert row.active_job is None
+        recovered = [
+            item
+            for item in out["jobs"]
+            if item.get("job") == "job-missing-sidecar" and item.get("reason") == "sidecar_missing"
+        ]
+        assert len(recovered) == 1
+        history = coord.store.workflow_history("S20")
+        event = next(e for e in history if e["kind"] == "dead_running_recovered")
+        assert event["details"]["job"] == "job-missing-sidecar"
+        assert event["details"]["reason"] == "sidecar_missing"
+
+    def test_reconcile_leaves_running_when_sidecar_exists_but_exit_unknown(self, coord_env, tmp_path, monkeypatch):
+        team_root, spool = coord_env
+        home = tmp_path / "home"
+        monkeypatch.setenv("HOME", str(home))
+        ctx = team_root / "context" / "S21.md"
+        ctx.parent.mkdir(parents=True)
+        ctx.write_text("still running\n", encoding="utf-8")
+
+        coord = TeamCoordinator(team_root=team_root, spool_root=spool)
+        coord.assign(
+            slice_id="S21",
+            to_peer="swe",
+            title="unknown exit",
+            assignment_path=str(ctx),
+        )
+        coord.store.set_status("S21", "RUNNING", active_job="job-unknown-exit")
+        sidecar = sidecar_path("job-unknown-exit", home=home)
+        sidecar.parent.mkdir(parents=True, exist_ok=True)
+        sidecar.write_text(
+            json.dumps({"slice": "S21", "profile": "software-engineer", "mode": "write"}),
+            encoding="utf-8",
+        )
+
+        out = coord.reconcile()
+
+        row = coord.store.get_slice("S21")
+        assert row is not None
+        assert row.status == "RUNNING"
+        assert row.active_job == "job-unknown-exit"
+        assert all(item.get("job") != "job-unknown-exit" for item in out["jobs"])
+
     def test_report_only_auto_handled(self, coord_env):
         team_root, spool = coord_env
         ctx = team_root / "context" / "SMOKE.md"
