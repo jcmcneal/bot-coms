@@ -73,6 +73,25 @@ class TestBusStore:
         assert row.active_job is None
         assert row.verdict == "LANDED"
 
+    def test_status_queued_clears_active_job(self, store: BusStore, tmp_path: Path):
+        ctx = tmp_path / "S10.md"
+        ctx.write_text("x", encoding="utf-8")
+        store.register_slice(
+            slice_id="S10",
+            to_profile="software-engineer",
+            from_profile="project-manager",
+            peer="swe",
+            title="queued clears active",
+            assignment_path=str(ctx),
+            content_sha256=None,
+        )
+        store.set_status("S10", "RUNNING", active_job="s10-job")
+        store.set_status("S10", "QUEUED")
+        row = store.get_slice("S10")
+        assert row is not None
+        assert row.status == "QUEUED"
+        assert row.active_job is None
+
     def test_log(self, store: BusStore):
         entry = store.append_log("project-manager", "dispatch verified")
         assert entry["actor"] == "project-manager"
