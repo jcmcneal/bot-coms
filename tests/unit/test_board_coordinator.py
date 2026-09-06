@@ -72,6 +72,17 @@ class TestCoordinator:
         event = next(e for e in history if e["kind"] == "dead_running_recovered")
         assert event["details"]["job"] == "job-missing-sidecar"
         assert event["details"]["reason"] == "sidecar_missing"
+        assert out["open_incomplete"] == {
+            "count": 1,
+            "slices": [
+                {
+                    "slice": "S20",
+                    "status": "QUEUED",
+                    "open_incomplete": True,
+                    "incomplete_reason": "open_status_no_live_job",
+                }
+            ],
+        }
 
     def test_reconcile_leaves_running_when_sidecar_exists_but_exit_unknown(self, coord_env, tmp_path, monkeypatch):
         team_root, spool = coord_env
@@ -103,6 +114,34 @@ class TestCoordinator:
         assert row.status == "RUNNING"
         assert row.active_job == "job-unknown-exit"
         assert all(item.get("job") != "job-unknown-exit" for item in out["jobs"])
+        assert out["open_incomplete"] == {"count": 0, "slices": []}
+
+    def test_workflow_describe_exposes_open_incomplete(self, coord_env):
+        team_root, spool = coord_env
+        ctx = team_root / "context" / "DESCRIBE.md"
+        ctx.parent.mkdir(parents=True)
+        ctx.write_text(
+            """\
+## Completion checklist
+| ID | Responsible peer | Completion condition | Required evidence |
+|---|---|---|---|
+| C1 | swe | Finish the task | Result |
+""",
+            encoding="utf-8",
+        )
+        coord = TeamCoordinator(team_root=team_root, spool_root=spool)
+        coord.assign(
+            slice_id="DESCRIBE",
+            to_peer="swe",
+            title="describe incomplete",
+            assignment_path=str(ctx),
+        )
+
+        out = coord.workflow("describe", actor="pm", slice_id="DESCRIBE")
+
+        assert out["open_incomplete"] is True
+        assert out["incomplete_reason"] == "unfinished_checklist_no_live_job"
+        assert out["checklist_summary"]["unfinished"] == 1
 
     def test_report_only_auto_handled(self, coord_env):
         team_root, spool = coord_env

@@ -3,6 +3,7 @@
 from __future__ import annotations
 
 import json
+import re
 from pathlib import Path
 from typing import Any
 
@@ -16,6 +17,13 @@ COMMS_PROCESSING = "processing"
 COMMS_ACKED = "acked"
 COMMS_RESPONDED = "responded"
 COMMS_UNKNOWN = "unknown"
+
+OPEN_STATUSES = frozenset({"QUEUED", "BLOCKED", "RUNNING", "REVIEW", "SUBMITTED", "ASK_DONE"})
+TERMINAL_STATUSES = frozenset({"DONE", "CANCELLED"})
+
+_HEADING_RE = re.compile(r"^(#{1,6})\s+(.+?)\s*#*\s*$")
+_ITEM_ID_RE = re.compile(r"^[A-Za-z0-9][A-Za-z0-9._-]*$")
+_DISPOSITION_RE = re.compile(r"\b(not[\s_-]+attempted|satisfied|blocked)\b", re.IGNORECASE)
 
 
 def _read_json(path: Path) -> dict[str, Any] | None:
@@ -100,6 +108,123 @@ def comms_state_for_slice(
     return COMMS_UNKNOWN, detail
 
 
+def _markdown_section(body: str, title: str) -> list[str] | None:
+    lines = body.splitlines()
+    wanted = title.casefold()
+    for index, line in enumerate(lines):
+        match = _HEADING_RE.match(line.strip())
+        if match is None or match.group(2).strip().casefold() != wanted:
+            continue
+        level = len(match.group(1))
+        end = len(lines)
+        for next_index in range(index + 1, len(lines)):
+            next_match = _HEADING_RE.match(lines[next_index].strip())
+            if next_match is not None and len(next_match.group(1)) <= level:
+                end = next_index
+                break
+        return lines[index + 1 : end]
+    return None
+
+
+def _pipe_cells(line: str) -> list[str]:
+    cells = [cell.strip() for cell in line.strip().strip("|").split("|")]
+    return cells if len(cells) >= 2 else []
+
+
+def _checklist_item_ids(lines: list[str]) -> list[str]:
+    ids: list[str] = []
+    for line in lines:
+        cells = _pipe_cells(line)
+        if len(cells) < 3:
+            continue
+        item_id = cells[0].strip("`*_ ")
+        if (
+            item_id.casefold() == "id"
+            or not _ITEM_ID_RE.fullmatch(item_id)
+            or all(re.fullmatch(r":?-{3,}:?", cell) for cell in cells)
+        ):
+            continue
+        if item_id not in ids:
+            ids.append(item_id)
+    return ids
+
+
+def _checklist_dispositions(lines: list[str]) -> dict[str, str]:
+    dispositions: dict[str, str] = {}
+    for line in lines:
+        cells = _pipe_cells(line)
+        if len(cells) < 2:
+            continue
+        item_id = cells[0].strip("`*_ ")
+        if item_id.casefold() == "id" or not _ITEM_ID_RE.fullmatch(item_id):
+            continue
+        match = _DISPOSITION_RE.search(cells[1])
+        if match is not None:
+            dispositions[item_id] = re.sub(
+                r"[\s_-]+", "_", match.group(1).casefold()
+            )
+    return dispositions
+
+
+def checklist_summary(assignment_path: str) -> dict[str, Any] | None:
+    """Summarize a parseable assignment completion checklist."""
+    try:
+        body = Path(assignment_path).expanduser().read_text(encoding="utf-8")
+    except (OSError, UnicodeError):
+        return None
+
+    checklist = _markdown_section(body, "Completion checklist")
+    if checklist is None:
+        return None
+    item_ids = _checklist_item_ids(checklist)
+    if not item_ids:
+        return None
+
+    result = _markdown_section(body, "Checklist result")
+    dispositions = _checklist_dispositions(result or [])
+    counts = {
+        status: sum(dispositions.get(item_id) == status for item_id in item_ids)
+        for status in ("satisfied", "blocked", "not_attempted")
+    }
+    satisfied = counts["satisfied"]
+    return {
+        "present": True,
+        "total": len(item_ids),
+        "satisfied": satisfied,
+        "blocked": counts["blocked"],
+        "not_attempted": counts["not_attempted"],
+        "dispositioned": sum(item_id in dispositions for item_id in item_ids),
+        "unfinished": len(item_ids) - satisfied,
+    }
+
+
+def incomplete_slice_view(row: SliceRow | None) -> dict[str, Any]:
+    """Return durable computed fields describing open work with no live job."""
+    out: dict[str, Any] = {
+        "open_incomplete": False,
+        "incomplete_reason": None,
+    }
+    if row is None:
+        return out
+
+    summary = checklist_summary(row.assignment_path)
+    if summary is not None:
+        out["checklist_summary"] = summary
+    if row.status.upper() in TERMINAL_STATUSES or row.active_job:
+        return out
+
+    if summary is not None:
+        if summary["unfinished"] > 0:
+            out["open_incomplete"] = True
+            out["incomplete_reason"] = "unfinished_checklist_no_live_job"
+        return out
+
+    if row.status.upper() in OPEN_STATUSES:
+        out["open_incomplete"] = True
+        out["incomplete_reason"] = "open_status_no_live_job"
+    return out
+
+
 def merge_slice_view(
     row: SliceRow | None,
     *,
@@ -117,6 +242,7 @@ def merge_slice_view(
         "found": row is not None,
         "comms_state": comms,
         "comms": comms_detail,
+        **incomplete_slice_view(row),
     }
     if row is not None:
         out["slice_row"] = row.to_dict()
