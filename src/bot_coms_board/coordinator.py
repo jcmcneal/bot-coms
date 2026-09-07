@@ -50,6 +50,22 @@ def _report_headers(notify_source: str | None) -> dict[str, str] | None:
     return {SOURCE_HEADER: notify_source}
 
 
+def _dead_sidecar_pid_reason(sidecar: dict[str, Any]) -> str | None:
+    pid = sidecar.get("pid")
+    if isinstance(pid, bool) or not isinstance(pid, int) or pid <= 0:
+        return "pid_missing"
+    try:
+        os.kill(pid, 0)
+    except ProcessLookupError:
+        return "pid_dead"
+    except PermissionError:
+        # The process exists, but belongs to another user.
+        return None
+    except (OSError, OverflowError):
+        return "pid_dead"
+    return None
+
+
 def read_assignment_body(path: str) -> str:
     return Path(path).read_text(encoding="utf-8")
 
@@ -203,25 +219,33 @@ class TeamCoordinator:
         for row in self.store.list_slices(limit=10000):
             if not row.contract or row.status != 'RUNNING' or not row.active_job:
                 continue
+            stale_job = row.active_job
             try:
-                sidecar = read_sidecar(row.active_job)
+                sidecar = read_sidecar(stale_job)
                 if sidecar.get('slice') != row.id:
                     continue
-                if parse_exit_code(tee_path_for(row.active_job, sidecar)) != 'unknown':
-                    completed.append(job_done(row.active_job, team_root=self.team_root, spool_root=self.spool_root))
+                if parse_exit_code(tee_path_for(stale_job, sidecar)) != 'unknown':
+                    completed.append(job_done(stale_job, team_root=self.team_root, spool_root=self.spool_root))
+                    continue
+                reason = _dead_sidecar_pid_reason(sidecar)
+                if reason is None:
+                    continue
+                event_details = {'job': stale_job, 'reason': reason}
             except FileNotFoundError as exc:
-                stale_job = row.active_job
-                self.store.set_status(row.id, 'QUEUED')
-                with self.store.workflow_transaction():
-                    self.store._workflow_event(
-                        row.id,
-                        'dead_running_recovered',
-                        row.peer,
-                        {'job': stale_job, 'reason': 'sidecar_missing', 'error': str(exc)},
-                    )
-                completed.append({'job': stale_job, 'slice': row.id, 'recovered': True, 'reason': 'sidecar_missing'})
+                reason = 'sidecar_missing'
+                event_details = {'job': stale_job, 'reason': reason, 'error': str(exc)}
             except (OSError, ValueError) as exc:
-                completed.append({'job':row.active_job, 'error':str(exc)})
+                completed.append({'job': stale_job, 'error': str(exc)})
+                continue
+            self.store.set_status(row.id, 'QUEUED')
+            with self.store.workflow_transaction():
+                self.store._workflow_event(
+                    row.id,
+                    'dead_running_recovered',
+                    row.peer,
+                    event_details,
+                )
+            completed.append({'job': stale_job, 'slice': row.id, 'recovered': True, 'reason': reason})
         delivery = self.flush_deliveries()
         incomplete = []
         for row in self.store.list_slices(limit=10000):
