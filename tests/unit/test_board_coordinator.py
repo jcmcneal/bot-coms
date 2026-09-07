@@ -3,6 +3,7 @@
 from __future__ import annotations
 
 import json
+import os
 from pathlib import Path
 
 import pytest
@@ -105,6 +106,102 @@ class TestCoordinator:
             ],
         }
 
+    def test_reconcile_recovers_dead_running_when_sidecar_pid_is_dead(
+        self, coord_env, tmp_path, monkeypatch
+    ):
+        team_root, spool = coord_env
+        home = tmp_path / "home"
+        monkeypatch.setenv("HOME", str(home))
+        ctx = team_root / "context" / "S21.md"
+        ctx.parent.mkdir(parents=True)
+        ctx.write_text("dead process\n", encoding="utf-8")
+
+        coord = TeamCoordinator(team_root=team_root, spool_root=spool)
+        coord.assign(
+            slice_id="S21",
+            to_peer="swe",
+            title="dead pid",
+            assignment_path=str(ctx),
+        )
+        coord.store.set_status("S21", "RUNNING", active_job="job-dead-pid")
+        sidecar = sidecar_path("job-dead-pid", home=home)
+        sidecar.parent.mkdir(parents=True, exist_ok=True)
+        sidecar.write_text(
+            json.dumps(
+                {
+                    "slice": "S21",
+                    "profile": "software-engineer",
+                    "mode": "write",
+                    "pid": 999_999,
+                }
+            ),
+            encoding="utf-8",
+        )
+
+        def dead_pid(_pid: int, _signal: int) -> None:
+            raise ProcessLookupError
+
+        monkeypatch.setattr(os, "kill", dead_pid)
+        out = coord.reconcile()
+
+        row = coord.store.get_slice("S21")
+        assert row is not None
+        assert row.status == "QUEUED"
+        assert row.active_job is None
+        assert any(
+            item.get("job") == "job-dead-pid" and item.get("reason") == "pid_dead"
+            for item in out["jobs"]
+        )
+        event = next(
+            e
+            for e in coord.store.workflow_history("S21")
+            if e["kind"] == "dead_running_recovered"
+        )
+        assert event["details"]["job"] == "job-dead-pid"
+        assert event["details"]["reason"] == "pid_dead"
+
+    def test_reconcile_recovers_dead_running_when_sidecar_pid_is_missing(
+        self, coord_env, tmp_path, monkeypatch
+    ):
+        team_root, spool = coord_env
+        home = tmp_path / "home"
+        monkeypatch.setenv("HOME", str(home))
+        ctx = team_root / "context" / "S22.md"
+        ctx.parent.mkdir(parents=True)
+        ctx.write_text("missing pid\n", encoding="utf-8")
+
+        coord = TeamCoordinator(team_root=team_root, spool_root=spool)
+        coord.assign(
+            slice_id="S22",
+            to_peer="swe",
+            title="missing pid",
+            assignment_path=str(ctx),
+        )
+        coord.store.set_status("S22", "RUNNING", active_job="job-missing-pid")
+        sidecar = sidecar_path("job-missing-pid", home=home)
+        sidecar.parent.mkdir(parents=True, exist_ok=True)
+        sidecar.write_text(
+            json.dumps({"slice": "S22", "profile": "software-engineer", "mode": "write"}),
+            encoding="utf-8",
+        )
+
+        out = coord.reconcile()
+
+        row = coord.store.get_slice("S22")
+        assert row is not None
+        assert row.status == "QUEUED"
+        assert row.active_job is None
+        assert any(
+            item.get("job") == "job-missing-pid" and item.get("reason") == "pid_missing"
+            for item in out["jobs"]
+        )
+        event = next(
+            e
+            for e in coord.store.workflow_history("S22")
+            if e["kind"] == "dead_running_recovered"
+        )
+        assert event["details"]["reason"] == "pid_missing"
+
     def test_reconcile_leaves_running_when_sidecar_exists_but_exit_unknown(self, coord_env, tmp_path, monkeypatch):
         team_root, spool = coord_env
         home = tmp_path / "home"
@@ -124,7 +221,14 @@ class TestCoordinator:
         sidecar = sidecar_path("job-unknown-exit", home=home)
         sidecar.parent.mkdir(parents=True, exist_ok=True)
         sidecar.write_text(
-            json.dumps({"slice": "S21", "profile": "software-engineer", "mode": "write"}),
+            json.dumps(
+                {
+                    "slice": "S21",
+                    "profile": "software-engineer",
+                    "mode": "write",
+                    "pid": os.getpid(),
+                }
+            ),
             encoding="utf-8",
         )
 
