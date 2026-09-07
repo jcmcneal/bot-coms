@@ -160,6 +160,205 @@ class TestCoordinator:
         assert event["details"]["job"] == "job-dead-pid"
         assert event["details"]["reason"] == "pid_dead"
 
+    @pytest.mark.parametrize("failure_mode", ["return", "raise"])
+    def test_reconcile_recovers_dead_running_when_job_done_fails(
+        self, coord_env, tmp_path, monkeypatch, failure_mode
+    ):
+        import bot_coms_board.job_done as job_done_module
+
+        team_root, spool = coord_env
+        home = tmp_path / "home"
+        monkeypatch.setenv("HOME", str(home))
+        ctx = team_root / "context" / "S-JOB-DONE-FAIL.md"
+        ctx.parent.mkdir(parents=True)
+        ctx.write_text("failed completion hook\n", encoding="utf-8")
+
+        coord = TeamCoordinator(team_root=team_root, spool_root=spool)
+        coord.assign(
+            slice_id="S-JOB-DONE-FAIL",
+            to_peer="swe",
+            title="failed job done",
+            assignment_path=str(ctx),
+        )
+        coord.store.set_status(
+            "S-JOB-DONE-FAIL", "RUNNING", active_job="job-done-fail"
+        )
+        tee = home / ".hermes" / "job-done-fail.out"
+        tee.parent.mkdir(parents=True, exist_ok=True)
+        tee.write_text("EXIT:0\n", encoding="utf-8")
+        sidecar = sidecar_path("job-done-fail", home=home)
+        sidecar.parent.mkdir(parents=True, exist_ok=True)
+        sidecar.write_text(
+            json.dumps(
+                {
+                    "slice": "S-JOB-DONE-FAIL",
+                    "profile": "software-engineer",
+                    "mode": "write",
+                    "pid": 999_999,
+                    "out_path": str(tee),
+                }
+            ),
+            encoding="utf-8",
+        )
+
+        def failed_job_done(*_args, **_kwargs):
+            if failure_mode == "raise":
+                raise ValueError("only the assigned worker can submit work")
+            return {
+                "success": False,
+                "job": "job-done-fail",
+                "error": "only the assigned worker can submit work",
+            }
+
+        def dead_pid(_pid: int, _signal: int) -> None:
+            raise ProcessLookupError
+
+        monkeypatch.setattr(job_done_module, "job_done", failed_job_done)
+        monkeypatch.setattr(os, "kill", dead_pid)
+
+        out = coord.reconcile()
+
+        row = coord.store.get_slice("S-JOB-DONE-FAIL")
+        assert row is not None
+        assert row.status == "QUEUED"
+        assert row.active_job is None
+        assert any(
+            item.get("job") == "job-done-fail"
+            and item.get("recovered") is True
+            and item.get("reason") == "pid_dead"
+            for item in out["jobs"]
+        )
+        event = next(
+            e
+            for e in coord.store.workflow_history("S-JOB-DONE-FAIL")
+            if e["kind"] == "dead_running_recovered"
+        )
+        assert event["details"]["job_done_error"] == (
+            "only the assigned worker can submit work"
+        )
+
+    def test_reconcile_skips_job_done_for_wrong_worker_and_recovers_dead_pid(
+        self, coord_env, tmp_path, monkeypatch
+    ):
+        import bot_coms_board.job_done as job_done_module
+
+        team_root, spool = coord_env
+        home = tmp_path / "home"
+        monkeypatch.setenv("HOME", str(home))
+        ctx = team_root / "context" / "S-WRONG-WORKER.md"
+        ctx.parent.mkdir(parents=True)
+        ctx.write_text("wrong worker sidecar\n", encoding="utf-8")
+
+        coord = TeamCoordinator(team_root=team_root, spool_root=spool)
+        coord.assign(
+            slice_id="S-WRONG-WORKER",
+            to_peer="swe",
+            title="wrong worker",
+            assignment_path=str(ctx),
+        )
+        coord.store.set_status(
+            "S-WRONG-WORKER", "RUNNING", active_job="job-wrong-worker"
+        )
+        tee = home / ".hermes" / "job-wrong-worker.out"
+        tee.parent.mkdir(parents=True, exist_ok=True)
+        tee.write_text("EXIT:0\n", encoding="utf-8")
+        sidecar = sidecar_path("job-wrong-worker", home=home)
+        sidecar.parent.mkdir(parents=True, exist_ok=True)
+        sidecar.write_text(
+            json.dumps(
+                {
+                    "slice": "S-WRONG-WORKER",
+                    "profile": "project-manager",
+                    "mode": "write",
+                    "pid": 999_999,
+                    "out_path": str(tee),
+                }
+            ),
+            encoding="utf-8",
+        )
+
+        def unexpected_job_done(*_args, **_kwargs):
+            pytest.fail("job_done must not run for the wrong worker")
+
+        def dead_pid(_pid: int, _signal: int) -> None:
+            raise ProcessLookupError
+
+        monkeypatch.setattr(job_done_module, "job_done", unexpected_job_done)
+        monkeypatch.setattr(os, "kill", dead_pid)
+
+        coord.reconcile()
+
+        row = coord.store.get_slice("S-WRONG-WORKER")
+        assert row is not None
+        assert row.status == "QUEUED"
+        assert row.active_job is None
+        event = next(
+            e
+            for e in coord.store.workflow_history("S-WRONG-WORKER")
+            if e["kind"] == "dead_running_recovered"
+        )
+        assert event["details"]["job_done_skipped"] == "worker_mismatch"
+        assert event["details"]["sidecar_peer"] == "pm"
+        assert event["details"]["assigned_peer"] == "swe"
+
+    def test_reconcile_recovers_board_row_when_sidecar_slice_mismatches(
+        self, coord_env, tmp_path, monkeypatch
+    ):
+        team_root, spool = coord_env
+        home = tmp_path / "home"
+        monkeypatch.setenv("HOME", str(home))
+        ctx = team_root / "context" / "S-SLICE-MISMATCH.md"
+        ctx.parent.mkdir(parents=True)
+        ctx.write_text("mismatched sidecar\n", encoding="utf-8")
+
+        coord = TeamCoordinator(team_root=team_root, spool_root=spool)
+        coord.assign(
+            slice_id="S-SLICE-MISMATCH",
+            to_peer="swe",
+            title="slice mismatch",
+            assignment_path=str(ctx),
+        )
+        coord.store.set_status(
+            "S-SLICE-MISMATCH", "RUNNING", active_job="job-slice-mismatch"
+        )
+        sidecar = sidecar_path("job-slice-mismatch", home=home)
+        sidecar.parent.mkdir(parents=True, exist_ok=True)
+        sidecar.write_text(
+            json.dumps(
+                {
+                    "slice": "S-OTHER",
+                    "profile": "software-engineer",
+                    "mode": "write",
+                    "pid": 999_999,
+                }
+            ),
+            encoding="utf-8",
+        )
+
+        def dead_pid(_pid: int, _signal: int) -> None:
+            raise ProcessLookupError
+
+        monkeypatch.setattr(os, "kill", dead_pid)
+
+        out = coord.reconcile()
+
+        row = coord.store.get_slice("S-SLICE-MISMATCH")
+        assert row is not None
+        assert row.status == "QUEUED"
+        assert row.active_job is None
+        assert any(
+            item.get("slice") == "S-SLICE-MISMATCH"
+            and item.get("reason") == "slice_mismatch_pid_dead"
+            for item in out["jobs"]
+        )
+        event = next(
+            e
+            for e in coord.store.workflow_history("S-SLICE-MISMATCH")
+            if e["kind"] == "dead_running_recovered"
+        )
+        assert event["details"]["sidecar_slice"] == "S-OTHER"
+        assert event["details"]["reason"] == "slice_mismatch_pid_dead"
+
     def test_reconcile_recovers_dead_running_when_sidecar_pid_is_missing(
         self, coord_env, tmp_path, monkeypatch
     ):
@@ -202,7 +401,9 @@ class TestCoordinator:
         )
         assert event["details"]["reason"] == "pid_missing"
 
-    def test_reconcile_leaves_running_when_sidecar_exists_but_exit_unknown(self, coord_env, tmp_path, monkeypatch):
+    def test_reconcile_leaves_running_when_matching_sidecar_pid_is_live(
+        self, coord_env, tmp_path, monkeypatch
+    ):
         team_root, spool = coord_env
         home = tmp_path / "home"
         monkeypatch.setenv("HOME", str(home))

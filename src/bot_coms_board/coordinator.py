@@ -213,7 +213,13 @@ class TeamCoordinator:
                             outbound_id=env_row['message_id'] if env_row else '')
 
     def reconcile(self) -> dict:
-        from bot_coms_board.job_done import read_sidecar, tee_path_for, parse_exit_code, job_done
+        from bot_coms_board.job_done import (
+            job_done,
+            parse_exit_code,
+            read_sidecar,
+            resolve_worker_peer,
+            tee_path_for,
+        )
         completed = []
         # Recover EXIT that preceded the RUNNING stamp, or whose runner hook failed.
         for row in self.store.list_slices(limit=10000):
@@ -222,15 +228,64 @@ class TeamCoordinator:
             stale_job = row.active_job
             try:
                 sidecar = read_sidecar(stale_job)
-                if sidecar.get('slice') != row.id:
-                    continue
-                if parse_exit_code(tee_path_for(stale_job, sidecar)) != 'unknown':
-                    completed.append(job_done(stale_job, team_root=self.team_root, spool_root=self.spool_root))
-                    continue
-                reason = _dead_sidecar_pid_reason(sidecar)
-                if reason is None:
-                    continue
-                event_details = {'job': stale_job, 'reason': reason}
+                pid_reason = _dead_sidecar_pid_reason(sidecar)
+                sidecar_slice = str(sidecar.get('slice') or '').strip()
+                if sidecar_slice != row.id:
+                    if pid_reason is None:
+                        continue
+                    reason = f'slice_mismatch_{pid_reason}'
+                    event_details = {
+                        'job': stale_job,
+                        'reason': reason,
+                        'sidecar_slice': sidecar_slice or None,
+                    }
+                else:
+                    exit_code = parse_exit_code(tee_path_for(stale_job, sidecar))
+                    job_done_error = None
+                    worker_peer = None
+                    if exit_code != 'unknown':
+                        try:
+                            worker_peer = resolve_worker_peer(str(sidecar.get('profile') or ''))
+                        except Exception as exc:
+                            job_done_error = f'worker identity resolution failed: {exc}'
+                        if worker_peer == row.peer:
+                            try:
+                                result = job_done(
+                                    stale_job,
+                                    team_root=self.team_root,
+                                    spool_root=self.spool_root,
+                                )
+                                current = self.store.get_slice(row.id)
+                                if (
+                                    result.get('success')
+                                    and current is not None
+                                    and (
+                                        current.status != 'RUNNING'
+                                        or current.active_job != stale_job
+                                    )
+                                ):
+                                    completed.append(result)
+                                    continue
+                                job_done_error = str(
+                                    result.get('error')
+                                    or 'job_done did not clear the active assignment'
+                                )
+                            except Exception as exc:
+                                job_done_error = str(exc)
+                    if pid_reason is None:
+                        continue
+                    reason = pid_reason
+                    event_details = {'job': stale_job, 'reason': reason}
+                    if job_done_error:
+                        event_details['job_done_error'] = job_done_error
+                    elif exit_code != 'unknown' and worker_peer != row.peer:
+                        event_details.update(
+                            {
+                                'job_done_skipped': 'worker_mismatch',
+                                'sidecar_peer': worker_peer or None,
+                                'assigned_peer': row.peer,
+                            }
+                        )
             except FileNotFoundError as exc:
                 reason = 'sidecar_missing'
                 event_details = {'job': stale_job, 'reason': reason, 'error': str(exc)}
