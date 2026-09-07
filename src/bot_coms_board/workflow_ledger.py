@@ -15,6 +15,16 @@ def _now():
 
 
 class WorkflowLedger:
+    def recover_dead_job(self, slice_id, job, details):
+        """Fence a stale observation and commit recovery plus its wake atomically."""
+        with self.workflow_transaction():
+            row, contract = self._workflow_row(slice_id)
+            if row['status'] != 'RUNNING' or row['active_job'] != job:
+                return False
+            self._save_contract(slice_id, contract, status='QUEUED')
+            self._workflow_event(slice_id, 'dead_running_recovered', row['peer'], details)
+        return True
+
     @contextmanager
     def workflow_transaction(self):
         with self._lock:
@@ -41,7 +51,15 @@ class WorkflowLedger:
         cursor = self._conn.execute('INSERT INTO workflow_events(slice_id,kind,actor,details,at) VALUES (?,?,?,?,?)',
                            (slice_id, kind, actor, json.dumps(details), now.isoformat()))
         row, c = self._workflow_row(slice_id)
-        if kind not in {'assigned', 'reassignment', 'submission', 'execution', 'review', 'acceptance'}:
+        if kind not in {
+            'assigned',
+            'reassignment',
+            'submission',
+            'execution',
+            'dead_running_recovered',
+            'review',
+            'acceptance',
+        }:
             return
         intent = c.get('intent', 'assign') if kind == 'assigned' else 'assign' if kind == 'reassignment' else 'report'
         recipients = {row['peer']} if kind in ('assigned', 'reassignment') else {c['return_peer']}
@@ -50,6 +68,10 @@ class WorkflowLedger:
             recipients.add(c['owner_peer'])
         if kind == 'execution':
             recipients.add(row['peer'])  # worker must classify actual output and resume if needed
+            recipients.add(c['owner_peer'])  # owner must restart its supervision loop
+        if kind == 'dead_running_recovered':
+            # Recovery is a new actionable state, not a quiet status rewrite.
+            recipients.update({row['peer'], c['owner_peer']})
         if kind == 'review':
             recipients.add(c['owner_peer'])
             if details['decision'] == 'REJECTED':
@@ -58,7 +80,12 @@ class WorkflowLedger:
         if kind not in ('assigned', 'reassignment'):
             key += f":event-{cursor.lastrowid}"
         for recipient in recipients:
-            if recipient == actor and kind not in ('assigned', 'execution', 'reassignment'):
+            if recipient == actor and kind not in (
+                'assigned',
+                'execution',
+                'dead_running_recovered',
+                'reassignment',
+            ):
                 continue
             self._conn.execute('INSERT INTO workflow_outbox(message_id,event_id,sender,recipient,payload,headers,correlation_id,idem_key) VALUES (?,?,?,?,?,?,?,?)',
                 (generate_ulid(now), cursor.lastrowid, actor, recipient,

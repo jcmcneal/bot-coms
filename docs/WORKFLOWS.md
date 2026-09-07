@@ -96,6 +96,13 @@ Unresolved blockers remain inside the team until the owner deliberately escalate
 through the existing outbound adapter; automatic completion reporting does not
 invent an escalation decision.
 
+The accountable owner runs an event-driven supervision loop. Execution completion,
+failure, pause, dead-job recovery, submissions, and review decisions doorbell the
+owner. The owner drains ready actions across the affected parent/child chain and
+rechecks after every transition. It yields only when no action is currently ready;
+a live job or a pending peer response is a legitimate waiting state and the next
+workflow event restarts the loop.
+
 ## Change the team during work
 
 ```text
@@ -112,6 +119,16 @@ acknowledged without launching work. Completed assignments are immutable.
 
 ## Recovery and operation
 
+Internal wakes save pending queries under `wake-state/<peer>` and launch a short
+supervisor. A POSIX file lock serializes Hermes sessions for that peer across
+processes. The Hermes child inherits the lock, so a supervisor crash cannot
+release the lease while the session is still running. New arrivals remain on disk
+and are drained after the current session. Failed sessions retain their queries;
+reconciliation restarts pending supervisors whose leases are free. Recovery of a
+dead job fences its active handle and commits state, event, and outbox together.
+This is at-least-once execution: a crash after a successful session but before
+removing its query can replay a wake, so agents must inspect current board state.
+
 Board events and outbound delivery records commit in the same SQLite transaction.
 The relay reuses a stable envelope ID after a crash, retries failed notifications,
 and groups wake attempts by peer. Normal receipts do not wake an agent. Claims,
@@ -127,19 +144,20 @@ are idle, recovery waits for the next check. Retry backoff still applies.
 
 Reconciliation recovers completed
 **contracted** jobs whose runner notification was missed, reclaims stale processing
-leases for pending deliveries, and retries outstanding delivery wakes. Reconciliation
-is delivery-only: it does not doorbell assignees merely because a slice is
-`open_incomplete`, create coding-agent jobs, restart old threads, or rewrite historical
-slice ownership.
+leases for pending deliveries, and retries outstanding delivery wakes. A newly
+recovered dead `RUNNING` job persists a report to the assignee, return peer, and
+accountable owner. Reconciliation does not doorbell peers merely because an unchanged
+slice is `open_incomplete`, create coding-agent jobs, restart old threads, or rewrite
+historical slice ownership.
 For recovery during idle periods, optionally run `bot-coms-board reconcile` from
 an existing scheduler using `scripts/workflow-reconcile.sh`.
 
 After the Hermes gateway has started, run `bot-coms-board wake` once (or invoke
 `scripts/workflow-wake.sh` from the gateway's post-start hook). This one-shot kick
 finds slices whose board view reports `open_incomplete` and doorbells each slice's
-assignee peer once, even when that peer owns several such slices. The synthetic
-wake tells the peer to call `team_inbox`; it neither enqueues an assignment nor
-starts an agent. Do not run the wake command from cron or a minute loop. There is
+assignee and accountable owner once, even when a peer is involved in several such
+slices. The synthetic wake tells the peer to call `team_inbox`; it neither enqueues
+an assignment nor starts an agent. Do not run the wake command from cron or a minute loop. There is
 no persistent cooldown or cross-process deduplication because the command is
 intended to run once per gateway start.
 

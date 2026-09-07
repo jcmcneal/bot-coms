@@ -12,7 +12,6 @@ from __future__ import annotations
 
 import os
 import subprocess
-import uuid
 from pathlib import Path
 from typing import Any, Callable
 
@@ -182,9 +181,20 @@ def build_wake_query(env: Envelope) -> str:
         listed = ", ".join(slices) or "unknown"
         return (
             f"Post-start open_incomplete kick for peer {env.to}: slices {listed}. "
-            "Call team_inbox, then use team_workflow describe to inspect and resume your assigned slices. "
+            "Call team_inbox, then use team_workflow describe to inspect and resume slices assigned to "
+            "or owned by you. Re-enter the work loop: handle every ready next action, including stalled "
+            "work, child results, reviews, acceptance, reassignment, or escalation. "
             "This kick is coordination only; do not treat it as a new assignment or automatically launch "
-            "a coding agent. End turn after coordinating the unfinished work.\n"
+            "a coding agent. End only after checking that no actionable work remains.\n"
+        )
+
+    if intent == "report" and slice_id:
+        return (
+            f"Workflow report for peer {env.to} on slice {slice_id} from {env.from_peer}. "
+            "Call team_inbox and team_workflow describe. Re-enter the work loop: inspect the result, "
+            "the parent and child slices, required reviews, and any blocked or paused work; take every "
+            "ready next action within your authority. If you are the accountable owner, keep supervising "
+            "until no actionable work remains. End only after making that check.\n"
         )
 
     line = _payload_summary(payload)
@@ -203,38 +213,16 @@ def build_wake_query(env: Envelope) -> str:
 def _default_wake(profile: str, peer_id: str, env: Envelope) -> None:
     """Background ``hermes -p <profile> chat -Q --query-file``; never ``--continue`` / ``-c``."""
     query = build_wake_query(env)
-    qf = Path.home() / ".hermes" / "profiles" / profile / f"board-wake-{env.id}-{uuid.uuid4().hex}.txt"
+    # Stable per-delivery pending work, serialized across all relay processes.
+    from bot_coms.atomic import atomic_write_bytes
+    directory = team_root() / 'wake-state' / peer_id
+    qf = directory / f'{env.id}.txt'
     qf.parent.mkdir(parents=True, exist_ok=True)
-    qf.write_text(query, encoding="utf-8")
+    if not qf.exists():
+        atomic_write_bytes(qf, query.encode('utf-8'))
     hermes = hermes_bin()
-    if profile == "default":
-        cmd = [
-            hermes,
-            "chat",
-            "--in",
-            "~",
-            "-Q",
-            "--query-file",
-            str(qf),
-        ]
-    else:
-        cmd = [
-            hermes,
-            "-p",
-            profile,
-            "chat",
-            "--in",
-            "~",
-            "-Q",
-            "--query-file",
-            str(qf),
-        ]
-    subprocess.Popen(  # noqa: S603 — operator-configured hermes path
-        cmd,
-        stdout=subprocess.DEVNULL,
-        stderr=subprocess.DEVNULL,
-        start_new_session=True,
-    )
+    from bot_coms.wake_worker import start
+    start(directory, profile, hermes)
 
 
 def _adapter_message(env: Envelope) -> str:

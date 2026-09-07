@@ -50,6 +50,22 @@ Team configuration is `~/.hermes/team/workflows.json`.
 - Routine ACKs, stage transitions and RUNNING are quiet. Escalate only a genuine
   decision or unresolved blocker after peer/fallback routes have failed.
 
+## Accountable-owner loop
+
+The accountable owner is event-driven but persistent across events. Any execution
+completion, failure, pause, recovered dead job, submission, review decision or
+child acceptance restarts the owner's supervision loop. On each wake:
+
+1. Drain `team_inbox` and describe the affected slices.
+2. Reconcile parent and child obligations, blocked or paused work, current review
+   gates and acceptance readiness.
+3. Take every ready action within the assignment's authority. This may mean
+   accepting, requesting review or rework, reassigning, resuming coordination,
+   or escalating a genuinely unresolved decision.
+4. Repeat after each transition. End the turn only after checking the board and
+   establishing that no actionable work remains; live jobs and pending peer work
+   count as waiting, not abandonment.
+
 ## Questions and changing the team
 
 An agent question is PAUSED. Hermes assigns the question asynchronously, continues

@@ -8,6 +8,7 @@ import pytest
 
 from bot_coms import Client
 from bot_coms.doorbell import (
+    build_wake_query,
     is_running_only_ack,
     peer_to_hermes_profile,
     set_adapter_runner,
@@ -141,6 +142,26 @@ def test_report_b_to_a_doorbells_a_even_if_a_is_not_pm(stack_env, wakes, monkeyp
     assert recorded == [("a", "peer-a")]
     inbox = list((spool / "a" / "inbox").glob("*.json"))
     assert inbox, "report must land in original from peer inbox"
+
+
+def test_report_wake_reenters_loop_until_no_action_remains(stack_env):
+    _team_root, _spool = stack_env
+    from bot_coms.envelope import new_envelope
+    from bot_coms.types import SystemClock
+
+    env = new_envelope(
+        from_peer="b",
+        to="a",
+        msg_type="event",
+        payload={"schema_version": "1.0", "intent": "report", "slice": "S101"},
+        clock=SystemClock(),
+        ttl_s=300,
+    )
+    query = build_wake_query(env)
+
+    assert "Re-enter the work loop" in query
+    assert "accountable owner" in query
+    assert "no actionable work remains" in query
 
 
 def test_running_ack_does_not_wake(stack_env, wakes, monkeypatch):

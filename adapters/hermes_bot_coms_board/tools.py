@@ -121,7 +121,9 @@ TEAM_INBOX_SCHEMA = {
         "verify assignment digest for assign, drain responses and ack/fail receipts, "
         "and auto-handle report_only/report/cancel. Returns dispatch "
         "decisions (assign → launch_agent bundle). Assign stays claimed until "
-        "bot_coms_ack after agent_screen + team_bus status."
+        "bot_coms_ack after agent_screen + team_bus status. A report, failure, "
+        "pause, or recovered job restarts the owner/coordinator loop; drain ready "
+        "actions and yield only when none remain."
     ),
     "parameters": {
         "type": "object",
@@ -212,7 +214,7 @@ def team_report(args: dict | None = None, **kwargs) -> str:
 
 TEAM_WORKFLOW_SCHEMA = {
     "name": "team_workflow",
-    "description": "Inspect frozen ownership/review gates; record independent reviews; accept work; explicitly transfer active assignments. Actor comes from this peer's runtime identity.",
+    "description": "Inspect frozen ownership/review gates; record independent reviews; accept work; explicitly transfer active assignments. Actor comes from this peer's runtime identity. After a transition, accountable owners recheck the affected parent/child chain and continue until no action is ready.",
     "parameters": {"type":"object", "properties": {
         "action":{"type":"string", "enum":["describe","review","accept","reassign","reconcile"]},
         "slice":{"type":"string"},

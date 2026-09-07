@@ -292,16 +292,12 @@ class TeamCoordinator:
             except (OSError, ValueError) as exc:
                 completed.append({'job': stale_job, 'error': str(exc)})
                 continue
-            self.store.set_status(row.id, 'QUEUED')
-            with self.store.workflow_transaction():
-                self.store._workflow_event(
-                    row.id,
-                    'dead_running_recovered',
-                    row.peer,
-                    event_details,
-                )
+            if not self.store.recover_dead_job(row.id, stale_job, event_details):
+                continue
             completed.append({'job': stale_job, 'slice': row.id, 'recovered': True, 'reason': reason})
         delivery = self.flush_deliveries()
+        from bot_coms.wake_worker import recover
+        recover(self.team_root)
         incomplete = []
         for row in self.store.list_slices(limit=10000):
             fields = incomplete_slice_view(row)
@@ -323,28 +319,33 @@ class TeamCoordinator:
         }
 
     def wake_incomplete(self) -> dict[str, Any]:
-        """Doorbell each peer with open incomplete slices once per invocation."""
+        """Doorbell assignees and accountable owners for open slices once."""
         from bot_coms.doorbell import ring
         from bot_coms.envelope import new_envelope
         from bot_coms.types import SystemClock
 
-        by_peer: dict[str, list[dict[str, Any]]] = {}
+        by_peer: dict[str, dict[str, dict[str, Any]]] = {}
         for row in self.store.list_slices(limit=10000):
             fields = incomplete_slice_view(row)
             if not fields["open_incomplete"]:
                 continue
-            by_peer.setdefault(row.peer, []).append(
-                {
-                    "slice": row.id,
-                    "status": row.status,
-                    "incomplete_reason": fields["incomplete_reason"],
-                }
-            )
+            item = {
+                "slice": row.id,
+                "status": row.status,
+                "incomplete_reason": fields["incomplete_reason"],
+            }
+            peers = [row.peer]
+            owner = str((row.contract or {}).get("owner_peer") or "").strip()
+            if owner and owner != row.peer:
+                peers.append(owner)
+            for peer in peers:
+                by_peer.setdefault(peer, {})[row.id] = item
 
         woken: list[dict[str, Any]] = []
         errors: list[dict[str, str]] = []
         clock = SystemClock()
-        for peer, slices in by_peer.items():
+        for peer, slice_map in by_peer.items():
+            slices = list(slice_map.values())
             slice_ids = [item["slice"] for item in slices]
             env = new_envelope(
                 from_peer="bot-coms-board",
@@ -367,8 +368,20 @@ class TeamCoordinator:
 
         return {
             "open_incomplete": {
-                "count": sum(len(slices) for slices in by_peer.values()),
-                "slices": [item for slices in by_peer.values() for item in slices],
+                "count": len(
+                    {
+                        item["slice"]
+                        for slices in by_peer.values()
+                        for item in slices.values()
+                    }
+                ),
+                "slices": list(
+                    {
+                        item["slice"]: item
+                        for slices in by_peer.values()
+                        for item in slices.values()
+                    }.values()
+                ),
             },
             "woken": {
                 "count": len(woken),

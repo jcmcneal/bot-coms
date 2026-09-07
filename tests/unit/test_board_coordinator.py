@@ -489,6 +489,7 @@ class TestCoordinator:
         assert "Call team_inbox" in query
         assert "WAKE-ONE" in query
         assert "do not treat it as a new assignment" in query
+        assert "no actionable work remains" in query
         assert out["woken"] == {
             "count": 1,
             "peers": [{"peer": "swe", "slices": ["WAKE-ONE"]}],

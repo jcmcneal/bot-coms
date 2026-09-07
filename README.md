@@ -61,6 +61,8 @@ flowchart LR
     E --> R
     R --> G[Assigned reviewers\nteam_workflow review]
     G --> X[Accountable owner\nteam_workflow accept]
+    E -->|completion, pause, or failure| X
+    X -->|ready next action| C
     X -->|root assignment only| O
     L --> Q[reconcile every minute]
     Q -->|retry durable delivery or recover missed exit| S

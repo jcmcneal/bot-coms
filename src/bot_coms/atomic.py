@@ -92,6 +92,20 @@ def read_json(path: Path) -> Any:
         return json.load(fh)
 
 
+def atomic_write_bytes(path: Path, data: bytes) -> None:
+    partial = path.with_name(f'.{path.name}.{secrets.token_hex(8)}.partial')
+    try:
+        with partial.open('xb') as stream:
+            partial.chmod(0o600)
+            stream.write(data)
+            stream.flush()
+            os.fsync(stream.fileno())
+        os.replace(partial, path)
+        _fsync_dir(path.parent)
+    finally:
+        partial.unlink(missing_ok=True)
+
+
 def append_jsonl_line(path: Path, obj: Any, *, file_mode: int = 0o600) -> None:
     line = json.dumps(obj, ensure_ascii=False, separators=(",", ":")) + "\n"
     flags = os.O_WRONLY | os.O_CREAT | os.O_APPEND

@@ -144,6 +144,83 @@ def test_paused_stale_exit_and_coordination(loop):
     assert c.store.get_slice('S1').active_job is None
 
 
+@pytest.mark.parametrize('verdict', ['EXECUTED', 'ERROR', 'PAUSED'])
+def test_execution_transition_restarts_accountable_owner_loop(loop, monkeypatch, verdict):
+    c, _ = loop
+    assign(c)
+    c.store.set_status('S1', 'RUNNING', active_job='job')
+    wakes = []
+    monkeypatch.setenv('BOT_COMS_DOORBELL', '1')
+    with patch(
+        'bot_coms.doorbell._wake_runner',
+        lambda profile, peer, env: wakes.append((peer, env.payload)),
+    ):
+        c.report(
+            slice_id='S1',
+            from_peer='builder',
+            verdict=verdict,
+            evidence=f'{verdict} evidence',
+            job='job',
+        )
+
+    assert {'lead', 'builder', 'owner'} <= {peer for peer, _payload in wakes}
+    assert any(
+        peer == 'owner' and payload == {
+            'schema_version': '1.0',
+            'intent': 'report',
+            'slice': 'S1',
+        }
+        for peer, payload in wakes
+    )
+
+
+def test_dead_job_recovery_restarts_accountable_owner_loop(loop, monkeypatch, tmp_path):
+    c, _ = loop
+    assign(c)
+    c.store.set_status('S1', 'RUNNING', active_job='missing-job')
+    monkeypatch.setenv('HOME', str(tmp_path / 'home'))
+    monkeypatch.setenv('BOT_COMS_DOORBELL', '1')
+    wakes = []
+    with patch(
+        'bot_coms.doorbell._wake_runner',
+        lambda profile, peer, env: wakes.append(peer),
+    ):
+        out = c.reconcile()
+
+    assert out['jobs'][0]['reason'] == 'sidecar_missing'
+    assert {'lead', 'builder', 'owner'} <= set(wakes)
+
+
+def test_recovery_rolls_back_and_fences_replaced_job(loop):
+    c, _ = loop
+    assign(c)
+    c.store.set_status('S1', 'RUNNING', active_job='current')
+    assert not c.store.recover_dead_job('S1', 'old', {})
+    with patch.object(c.store, '_workflow_event', side_effect=RuntimeError('crash')):
+        with pytest.raises(RuntimeError):
+            c.store.recover_dead_job('S1', 'current', {})
+    assert c.store.get_slice('S1').active_job == 'current'
+    assert c.store.get_slice('S1').status == 'RUNNING'
+    assert c.store.recover_dead_job('S1', 'current', {})
+    assert not c.store.recover_dead_job('S1', 'current', {})
+
+
+def test_startup_wake_reactivates_assignee_and_accountable_owner(loop, monkeypatch):
+    c, _ = loop
+    assign(c)
+    monkeypatch.setenv('BOT_COMS_DOORBELL', '1')
+    wakes = []
+    with patch(
+        'bot_coms.doorbell._wake_runner',
+        lambda profile, peer, env: wakes.append(peer),
+    ):
+        out = c.wake_incomplete()
+
+    assert set(wakes) == {'builder', 'owner'}
+    assert out['open_incomplete']['count'] == 1
+    assert out['woken']['count'] == 2
+
+
 def test_durable_outbox_recovers_without_duplicate_envelopes(loop,monkeypatch):
     c,_=loop;monkeypatch.setenv('BOT_COMS_DOORBELL','1')
     with patch('bot_coms.doorbell._wake_runner',side_effect=OSError('offline')):

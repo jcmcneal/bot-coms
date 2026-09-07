@@ -324,7 +324,10 @@ def main(argv: list[str] | None = None) -> int:
     p.set_defaults(func=cmd_workflow)
     p = sub.add_parser('reconcile', help='Replay durable pending deliveries without launching coding agents')
     p.set_defaults(func=lambda ns: (_json_print(_coord(ns).reconcile()) or 0))
-    p = sub.add_parser('wake', help='Doorbell open-incomplete assignees once after gateway startup')
+    p = sub.add_parser(
+        'wake',
+        help='Doorbell open-incomplete assignees and owners after gateway startup',
+    )
     p.set_defaults(func=cmd_wake)
 
     ns = parser.parse_args(argv)
