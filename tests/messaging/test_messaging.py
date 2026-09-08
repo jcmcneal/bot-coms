@@ -284,3 +284,69 @@ def test_stale_account_or_replaced_server_cannot_accept_draft(api,root):
     assert response.status_code == 403
     with Store(root).db() as db:
         assert db.execute('SELECT count(*) FROM messages').fetchone()[0] == 0
+
+
+def test_peer_from_profile_name_avoids_crew_collisions():
+    from bot_coms_messaging.config import peer_from_profile_name, stable_profile_id
+    assert peer_from_profile_name('software-engineer') == 'software-engineer'
+    assert peer_from_profile_name('mora-software-engineer') == 'mora-software-engineer'
+    assert peer_from_profile_name('software-engineer') != peer_from_profile_name('mora-software-engineer')
+    a = stable_profile_id('server', 'software-engineer')
+    b = stable_profile_id('server', 'mora-software-engineer')
+    assert a != b and len(a) == 32
+
+
+def test_auto_enroll_discovers_profiles_and_honours_overrides(tmp_path):
+    from bot_coms_messaging.config import load_config, Problem
+    hermes = tmp_path
+    (hermes / 'config.yaml').write_text(json.dumps({'plugins': {'enabled': ['bot-coms', 'bot-coms-messaging']}}))
+    (hermes / 'profiles' / 'software-engineer').mkdir(parents=True)
+    (hermes / 'profiles' / 'software-engineer' / 'profile.yaml').write_text('display_name: SWE\n')
+    (hermes / 'profiles' / 'mora-software-engineer').mkdir(parents=True)
+    (hermes / 'profiles' / 'opt-out').mkdir(parents=True)
+    messaging = hermes / 'plugin-data' / 'bot-coms-messaging'
+    messaging.mkdir(parents=True)
+    (messaging / 'config.json').write_text(json.dumps({
+        'server_id': 'srv',
+        'hermes_executable': '/usr/bin/true',
+        'default_principals': ['test:alice'],
+        'auto_enroll_profiles': True,
+        'profiles': [
+            {'name': 'opt-out', 'enabled': False},
+        ],
+    }))
+    config = load_config(messaging)
+    by_name = {p['name']: p for p in config['profiles']}
+    assert set(by_name) >= {'default', 'software-engineer', 'mora-software-engineer', 'opt-out'}
+    assert by_name['software-engineer']['display_name'] == 'SWE'
+    assert by_name['software-engineer']['peer'] == 'software-engineer'
+    assert by_name['mora-software-engineer']['peer'] == 'mora-software-engineer'
+    assert by_name['opt-out']['enabled'] is False
+    assert by_name['default']['principals'] == ['test:alice']
+
+    bad = json.loads((messaging / 'config.json').read_text())
+    bad.pop('default_principals')
+    (messaging / 'config.json').write_text(json.dumps(bad))
+    with pytest.raises(Problem) as err:
+        load_config(messaging)
+    assert 'default_principals' in err.value.detail
+
+
+def test_worker_ensures_spool_for_newly_enrolled_peer(tmp_path):
+    hermes = tmp_path
+    (hermes / 'config.yaml').write_text(json.dumps({'plugins': {'enabled': ['bot-coms', 'bot-coms-messaging']}}))
+    (hermes / 'profiles' / 'alpha').mkdir(parents=True)
+    messaging = hermes / 'plugin-data' / 'bot-coms-messaging'
+    messaging.mkdir(parents=True)
+    (messaging / 'config.json').write_text(json.dumps({
+        'server_id': 'srv',
+        'hermes_executable': '/usr/bin/true',
+        'default_principals': ['test:alice'],
+        'auto_enroll_profiles': True,
+        'profiles': [],
+    }))
+    worker = Worker(messaging, execute=lambda *_: 'ok')
+    assert (messaging / 'spool' / 'alpha').is_dir()
+    (hermes / 'profiles' / 'beta').mkdir(parents=True)
+    worker.refresh_config()
+    assert (messaging / 'spool' / 'beta').is_dir()

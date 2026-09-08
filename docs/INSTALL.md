@@ -62,6 +62,16 @@ Authenticated DMs and multi-bot groups use the sibling package `bot_coms_messagi
 `bot-coms-board` just to get messaging. This package still does not rewrite
 Hermes `plugins.enabled`.
 
+### Agent-assisted path
+
+If a Hermes profile can load skills from this repository’s `skills/` directory
+(for example `skills.external_dirs: [/path/to/bot-coms/skills]`), ask it to follow
+the **`messaging-setup`** skill. Clients may also open a new session with a seed
+prompt that embeds this checklist and, when signed in, the operator’s already
+authenticated principal (`provider:user_id` or `provider:user_id:org_id`). When
+that principal is present in the prompt, do not ask the operator to open a
+browser or paste `/api/auth/me`.
+
 ### One-repo install
 
 Run in the same Python environment that serves the Hermes dashboard:
@@ -77,13 +87,13 @@ an existing path.
 
 ### Enable and configure
 
-1. Add `bot-coms` and `bot-coms-messaging` to the shared instance
-   `plugins.enabled` list (preserve other entries). Enable bot-coms for
-   participating profiles as required by that deployment. Messaging is a
-   **dashboard** plugin; it does not add model tools.
+1. Add `bot-coms` and `bot-coms-messaging` to the **shared instance**
+   `plugins.enabled` list (preserve other entries). Messaging is a **dashboard**
+   plugin — enable it once on the shared Hermes root. New named profiles do **not**
+   need `bot-coms-messaging` in their own `config.yaml`.
 2. Create `<hermes-root>/plugin-data/bot-coms-messaging/config.json` with
-   owner-only permissions. Use generated immutable IDs and an explicit account
-   allowlist:
+   owner-only permissions. Prefer auto-enroll so every Hermes profile appears in
+   the roster without rewriting the file for each new profile:
 
 ```json
 {
@@ -91,24 +101,22 @@ an existing path.
   "hermes_executable": "/absolute/path/to/hermes",
   "max_turns": 12,
   "run_timeout_seconds": 600,
-  "profiles": [
-    {
-      "id": "generate-a-profile-uuid-once",
-      "peer": "swe",
-      "name": "swe",
-      "display_name": "SWE",
-      "enabled": true,
-      "principals": ["provider:user-id"]
-    }
-  ]
+  "default_principals": ["provider:user-id"],
+  "auto_enroll_profiles": true,
+  "profiles": []
 }
 ```
 
-Principal format is `provider:user_id`, or `provider:user_id:org_id` when an
-organization ID exists (from Hermes `/api/auth/me`). Keep `server_id` and profile
-`id` values stable across renames; a deleted/recreated profile needs a new ID.
-The reserved spool peer `inbox` represents the authenticated dashboard client;
-do not assign that peer name to a bot profile.
+`default_principals` entries use `provider:user_id`, or `provider:user_id:org_id`
+when an organization ID exists. Keep `server_id` stable across renames. With
+`auto_enroll_profiles: true`, messaging discovers `default` plus live
+`profiles/*/`, derives stable ids/peers from each Hermes profile name (not from
+`BOT_COMS_PEER_ID`), and applies `default_principals`. Put explicit rows in
+`profiles` only for overrides (for example `"enabled": false` to opt out).
+
+Without auto-enroll, list every messaging profile explicitly (legacy). The
+reserved spool peer `inbox` represents the authenticated dashboard client; do
+not assign that peer name to a bot profile.
 
 3. Supervise the worker (do not attach its lifetime to a mobile or desktop client):
 
@@ -116,6 +124,9 @@ do not assign that peer name to a bot profile.
 /path/to/hermes/python -m bot_coms_messaging.worker \
   --root /absolute/shared-hermes-root/plugin-data/bot-coms-messaging
 ```
+
+The worker reloads config periodically and creates spool peers for newly
+enrolled profiles without requiring a worker restart.
 
 4. Restart the dashboard when active work can safely be interrupted. Clients
    should re-check messaging readiness after setup. Readiness needs

@@ -20,14 +20,20 @@ class Worker:
     def __init__(self, root: Path, execute=None):
         from bot_coms import Client, init_spool
         self.root, self.store = Path(root), Store(root)
-        self.config = load_config(root)
         self.spool = self.root / 'spool'
-        init_spool(self.spool, ['inbox'] + [p['peer'] for p in self.config['profiles']])
+        self._init_spool = init_spool
         self.client_type = Client
-        self.sender = Client(self.spool, 'inbox')
         self.execute = execute or self.execute_hermes
         (self.root / 'locks').mkdir(exist_ok=True, mode=0o700)
         (self.root / 'runs').mkdir(exist_ok=True, mode=0o700)
+        self.config = self.refresh_config()
+        self.sender = Client(self.spool, 'inbox')
+
+    def refresh_config(self):
+        """Reload config and ensure spool peers exist for newly enrolled profiles."""
+        self.config = load_config(self.root)
+        self._init_spool(self.spool, ['inbox'] + [p['peer'] for p in self.config['profiles']])
+        return self.config
 
     def heartbeat(self):
         with self.store.db() as db:
@@ -40,7 +46,7 @@ class Worker:
                 fcntl.flock(lease, fcntl.LOCK_EX | fcntl.LOCK_NB)
             except BlockingIOError:
                 return False
-            self.config = load_config(self.root)
+            self.refresh_config()
             active_profile = next((p for p in self.config['profiles'] if p['id'] == profile['id'] and p.get('enabled')), None)
             if active_profile is None:
                 return False
@@ -163,7 +169,7 @@ def main():
     with concurrent.futures.ThreadPoolExecutor(max_workers=8) as pool:
         while not stopping.is_set():
             try:
-                config = load_config(args.root)
+                config = worker.refresh_config()
                 worker.heartbeat()
                 for p in config['profiles']:
                     future = active.get(p['id'])
