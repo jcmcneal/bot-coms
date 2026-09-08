@@ -2,7 +2,7 @@
 
 Thin tools plugin. It imports **only** `bot_coms` plus Hermes `PluginContext` at `register(ctx)` time.
 
-It does **not** import the A2A platform plugin, read or write BUS.md, or touch Open Genome.
+It does **not** import the A2A platform plugin or read/write BUS.md.
 
 ## Install (user action)
 

@@ -11,6 +11,7 @@ operator's choices and runtime state.
 | [CHECKLISTS.md](CHECKLISTS.md) | Assigner-created task checklists, delegation and verification |
 | [DELIVERY.md](DELIVERY.md) | Delivery sequence |
 | [PRUNE.md](PRUNE.md) | On-demand maintenance procedure |
+| [NEW-PRODUCT.md](NEW-PRODUCT.md) | Interview before creating a product team root, spool or peer set |
 | [team-ops skill](../../skills/team-ops/SKILL.md) | Assignment and review procedure |
 | `~/.hermes/TEAM.md` | Local project constraints and escalation route |
 | `~/.hermes/team/USAGE.md` | Local meter command and budget rules |
@@ -24,7 +25,8 @@ contracts when local bindings change.
 
 ## Setup
 
-Use the [provisioning guide](../../skills/team-ops/references/provision.md).
+For a new product or app, complete [NEW-PRODUCT.md](NEW-PRODUCT.md) before provisioning.
+Use the [provisioning guide](../../skills/team-ops/references/provision.md) for individual peers.
 [Local TEAM template](../../examples/team/TEAM.md) and
 [local USAGE template](../../examples/team/USAGE.md) contain fields to fill in,
 not copies of shared policy. Keep only applicable local settings.

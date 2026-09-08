@@ -17,3 +17,8 @@
 `bus.sqlite` coordination, high-level assign/inbox/report tools, and the
 Hermes `bot-coms-board` plugin. The core never imports `bot_coms_board`; an
 import-boundary test enforces this.
+
+**Sibling lane:** `bot_coms_messaging` (same wheel, optional `[messaging]`
+extra) owns persistent DMs/groups, the Hermes dashboard plugin
+`bot-coms-messaging`, and a dedicated messaging spool/worker. The core never
+imports `bot_coms_messaging`; messaging never requires `bot_coms_board`.

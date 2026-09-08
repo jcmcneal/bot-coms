@@ -6,6 +6,8 @@ This project does **not** depend on the Hermes A2A gateway or any product reposi
 
 **Team coordination** lives in the sibling package `bot_coms_board` (same repo): `bus.sqlite` ledger, `team_assign` / `team_inbox` / `team_report` Hermes tools, and `bot-coms-board` CLI. See `docs/BOARD.md` and [`docs/WORKFLOWS.md`](docs/WORKFLOWS.md) for configurable responsibilities, frozen ownership, independent review gates and owner acceptance. The transport core never imports the board lane.
 
+**Persistent messaging** lives in the sibling package `bot_coms_messaging` (same wheel, optional `[messaging]` extra): authenticated DMs and multi-bot groups over a dedicated spool, exposed as a Hermes dashboard plugin with a supervised worker. It uses bot-coms as transport only and does **not** require `bot_coms_board`. See [`docs/INSTALL.md`](docs/INSTALL.md#persistent-messaging).
+
 MVP requires a **local POSIX** disk (APFS/ext4). NFS and other shared filesystems are unsupported.
 
 ## Hermes team layout
@@ -17,7 +19,8 @@ the current participants, assignments, messages, and operator-specific settings.
 bot-coms/                              reusable source and documentation
 ├── src/bot_coms/                      filesystem message transport
 ├── src/bot_coms_board/                workflow ledger, contracts, recovery
-├── adapters/                          Hermes plugin entry points
+├── src/bot_coms_messaging/            persistent DMs/groups over a dedicated spool
+├── adapters/                          Hermes tool + dashboard plugin entry points
 ├── skills/team-ops/                   agent operating procedure
 ├── docs/team/                         shared policy and daily prune procedure
 └── examples/team/                     local-settings templates
@@ -78,7 +81,8 @@ root acceptance sends the concise outcome to the assignment's saved origin.
 |---|---|
 | `bot_coms` | Atomic filesystem-spool transport, peer allowlists, claim/ack lifecycle, idempotent worker support. |
 | `bot_coms_board` | Assignment ledger, frozen contracts, review/acceptance gates, durable outbox, and reconciliation. |
-| Hermes adapters | Expose `team_assign`, `team_inbox`, `team_report`, `team_workflow`, and `team_bus` to a profile. |
+| `bot_coms_messaging` | Persistent DMs/groups, dashboard API, dedicated spool, and messaging worker. Does not require board. |
+| Hermes adapters | Expose `team_assign`, `team_inbox`, `team_report`, `team_workflow`, and `team_bus` to a profile; dashboard plugin for persistent messaging. |
 | `workflows.json` | Maps stable peer IDs to profiles and capabilities; binds responsibilities to peers; defines policies for new assignments. |
 | Profile `config.yaml` and `.env` | Select installed plugins/tools and give each profile its runtime peer identity. |
 | `team-ops` skill | Tells agents how to dispatch, receive, report, review, accept, and reassign work. |
@@ -174,11 +178,18 @@ Handler contract: the transport may deliver the same logical message more than o
 ```bash
 python -m pytest tests/unit tests/smoke -q
 bot-coms smoke --all
+
+# Persistent messaging companion (needs the messaging extra):
+pip install -e ".[messaging,dev]"
+python -m pytest tests/messaging -q
 ```
 
 ## Hermes adapter
 
 See `docs/INSTALL.md` and `adapters/hermes_bot_coms/README.md`. Enablement is a **user** action (`hermes plugins enable bot-coms`); this package does not rewrite Hermes config.
+
+For persistent DMs/groups, install with the messaging extra and follow
+[`docs/INSTALL.md` § Persistent messaging](docs/INSTALL.md#persistent-messaging).
 
 ## Docs
 
@@ -187,5 +198,5 @@ See `docs/INSTALL.md` and `adapters/hermes_bot_coms/README.md`. Enablement is a 
 - [Provision a Hermes teammate](skills/team-ops/references/provision.md) — fresh profiles, shared policy and capability registration
 - [`docs/PROTOCOL.md`](docs/PROTOCOL.md) — normative envelope, layout, and lifecycle
 - [`docs/NON_GOALS.md`](docs/NON_GOALS.md)
-- [`docs/INSTALL.md`](docs/INSTALL.md)
+- [`docs/INSTALL.md`](docs/INSTALL.md) — including persistent messaging
 - [`docs/HTTP_ADAPTER_SKETCH.md`](docs/HTTP_ADAPTER_SKETCH.md) — post-MVP only
