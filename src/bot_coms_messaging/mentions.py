@@ -2,6 +2,9 @@
 
 User message bodies are never routed through this module — empty recipients
 defer to turn-taking (or the default responder only if that call fails).
+
+Handoffs match exact profile ids only (`@<id>`). Name / display_name aliases
+are ignored so clients can show friendly labels without affecting routing.
 """
 from __future__ import annotations
 
@@ -33,27 +36,20 @@ def mention_tokens(body: str) -> list[str]:
 def resolve_mentions(body: str, members: list[dict]) -> list[str]:
     """Map @tokens to member profile ids.
 
-    Matches case-insensitively against id, name, and display_name. When multiple
-    members could match the same token, the longest alias wins (then id order).
+    Matches case-insensitively against profile `id` only. Name and display_name
+    are never routing aliases.
     """
-    aliases: list[tuple[str, str, int]] = []  # (fold, profile_id, length)
+    by_id: dict[str, str] = {}
     for member in members:
         pid = member.get('id')
-        if not isinstance(pid, str) or not pid:
-            continue
-        for field in ('id', 'name', 'display_name', 'displayName'):
-            value = member.get(field)
-            if isinstance(value, str) and value.strip():
-                aliases.append((value.strip().casefold(), pid, len(value.strip())))
-    aliases.sort(key=lambda row: (-row[2], row[1]))
+        if isinstance(pid, str) and pid.strip():
+            by_id.setdefault(pid.strip().casefold(), pid.strip())
 
     resolved: list[str] = []
     seen: set[str] = set()
     for token in mention_tokens(body):
-        fold = token.casefold()
-        for alias, pid, _ in aliases:
-            if alias == fold and pid not in seen:
-                seen.add(pid)
-                resolved.append(pid)
-                break
+        pid = by_id.get(token.casefold())
+        if pid is not None and pid not in seen:
+            seen.add(pid)
+            resolved.append(pid)
     return resolved

@@ -277,7 +277,7 @@ def test_bot_output_at_enqueues_member_handoff(root):
     s = Store(root)
     g = s.groups('test:alice', 'Project', ['swe-id', 'designer-id'], 'swe-id', 'handoff')
     s.send('test:alice', 'm1', 'please coordinate', ['swe-id'], cid=g['id'], revision=1)
-    _run_dispatch(s, 'swe-id', 'I need @Designer on the layout')
+    _run_dispatch(s, 'swe-id', 'I need @designer-id on the layout')
     with s.db() as db:
         rows = [dict(r) for r in db.execute(
             'SELECT id, profile, hop, parent_dispatch FROM dispatches ORDER BY created')]
@@ -286,11 +286,20 @@ def test_bot_output_at_enqueues_member_handoff(root):
     assert rows[1]['hop'] == 1 and rows[1]['parent_dispatch'] == rows[0]['id']
 
 
+def test_bot_mention_name_alias_does_not_route(root):
+    s = Store(root)
+    g = s.groups('test:alice', 'Project', ['swe-id', 'designer-id'], 'swe-id', 'alias')
+    s.send('test:alice', 'm1', 'please coordinate', ['swe-id'], cid=g['id'], revision=1)
+    _run_dispatch(s, 'swe-id', 'I need @Designer and @designer on the layout')
+    with s.db() as db:
+        assert [r[0] for r in db.execute('SELECT profile FROM dispatches')] == ['swe-id']
+
+
 def test_bot_mention_in_code_fence_does_not_route(root):
     s = Store(root)
     g = s.groups('test:alice', 'Project', ['swe-id', 'designer-id'], 'swe-id', 'fence')
     s.send('test:alice', 'm1', 'look at this', ['swe-id'], cid=g['id'], revision=1)
-    _run_dispatch(s, 'swe-id', 'Example:\n```\n@designer in a fence\n```\nand ` @swe ` inline')
+    _run_dispatch(s, 'swe-id', 'Example:\n```\n@designer-id in a fence\n```\nand ` @swe-id ` inline')
     with s.db() as db:
         assert [r[0] for r in db.execute('SELECT profile FROM dispatches')] == ['swe-id']
 
@@ -299,8 +308,8 @@ def test_bot_mention_cycle_and_hop_budget(root):
     s = Store(root)
     g = s.groups('test:alice', 'Project', ['swe-id', 'designer-id'], 'swe-id', 'cycle')
     s.send('test:alice', 'm1', 'start', ['swe-id'], cid=g['id'], revision=1)
-    _run_dispatch(s, 'swe-id', 'Handing to @designer')
-    _run_dispatch(s, 'designer-id', 'Back to you @swe')
+    _run_dispatch(s, 'swe-id', 'Handing to @designer-id')
+    _run_dispatch(s, 'designer-id', 'Back to you @swe-id')
     with s.db() as db:
         profiles = [r[0] for r in db.execute('SELECT profile FROM dispatches ORDER BY created')]
     # A→B is allowed; B→A is dropped because swe is already on the chain.
@@ -317,10 +326,10 @@ def test_bot_mention_hop_cap_drops_third_hop(root):
         json.dump(dict(server_id='test-server', hermes_executable='/usr/bin/true', profiles=profiles), fh)
     g = s.groups('test:alice', 'Project', ['swe-id', 'designer-id', 'pm-id'], 'swe-id', 'hops')
     s.send('test:alice', 'm1', 'start', ['swe-id'], cid=g['id'], revision=1)
-    _run_dispatch(s, 'swe-id', 'Ask @designer', profiles=profiles)
-    _run_dispatch(s, 'designer-id', 'Ask @pm', profiles=profiles)
+    _run_dispatch(s, 'swe-id', 'Ask @designer-id', profiles=profiles)
+    _run_dispatch(s, 'designer-id', 'Ask @pm-id', profiles=profiles)
     # hop=2 reply trying to create hop=3 must be dropped (max_mention_hops=2).
-    _run_dispatch(s, 'pm-id', 'Ask @swe again', profiles=profiles)
+    _run_dispatch(s, 'pm-id', 'Ask @swe-id again', profiles=profiles)
     with s.db() as db:
         hops = [dict(r) for r in db.execute('SELECT profile, hop FROM dispatches ORDER BY created')]
     assert [(r['profile'], r['hop']) for r in hops] == [
@@ -341,7 +350,7 @@ def test_bot_mention_wake_budget_per_origin(root):
         json.dump(dict(server_id='test-server', hermes_executable='/usr/bin/true', profiles=profiles), fh)
     g = s.groups('test:alice', 'Room', members, 'swe-id', 'budget')
     s.send('test:alice', 'm1', 'fan out', ['swe-id'], cid=g['id'], revision=1)
-    body = ' '.join(f'@{p["name"]}' for p in extras)
+    body = ' '.join(f'@{p["id"]}' for p in extras)
     _run_dispatch(s, 'swe-id', body, profiles=profiles, max_wakes_per_origin=4)
     with s.db() as db:
         # Origin user dispatch + at most 3 follow-ups (budget 4 total).
@@ -355,7 +364,8 @@ def test_mention_parser_unit():
         {'id': 'swe-id', 'name': 'swe', 'display_name': 'SWE'},
         {'id': 'designer-id', 'name': 'designer', 'display_name': 'Designer'},
     ]
-    assert resolve_mentions('Ping @Designer and @swe-id', members) == ['designer-id', 'swe-id']
+    assert resolve_mentions('Ping @Designer and @swe', members) == []
+    assert resolve_mentions('Ping @designer-id and @SWE-ID', members) == ['designer-id', 'swe-id']
     assert resolve_mentions('no one', members) == []
 
 

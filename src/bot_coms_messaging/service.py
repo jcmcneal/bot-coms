@@ -479,6 +479,8 @@ class MessagingService:
             if session['session_id']:
                 db.execute('UPDATE session_bindings SET session_id=? WHERE binding_key=?', (session['session_id'], key))
             trigger = db.execute('SELECT sequence FROM messages WHERE id=?', (d['message'],)).fetchone()[0]
+            conversation = db.execute('SELECT * FROM conversations WHERE id=?', (d['conversation'],)).fetchone()
+            member_ids = set(json.loads(conversation['profiles']))
             context = [dict(r) for r in db.execute("""SELECT m.id,m.sequence,m.author,m.body FROM messages m
                 WHERE m.conversation=? AND (m.sequence<=? OR m.author!='user')
                 AND NOT EXISTS (SELECT 1 FROM session_messages s WHERE s.binding_key=? AND s.message=m.id)
@@ -496,10 +498,26 @@ class MessagingService:
             if state != 'running' or current['server_id'] != config['server_id'] or not self.authorized(current, d):
                 self.store.run_action(d['owner'], d['id'], 'cancel')
                 return True
-            prompt = ('Respond to the latest addressed message in this persistent conversation. '
-                      'The following are new shared messages; author IDs distinguish users and bots. '
-                      'Return your user-facing answer. Mention a conversation member only for a useful handoff.\n\n'
-                      + json.dumps(context, ensure_ascii=False))
+            roster = []
+            for row in current['profiles']:
+                if not isinstance(row, dict) or row.get('id') not in member_ids:
+                    continue
+                roster.append({
+                    'id': row['id'],
+                    'display_name': row.get('display_name') or row.get('name') or row['id'],
+                })
+            if not roster:
+                roster = [{'id': pid, 'display_name': pid} for pid in sorted(member_ids)]
+            payload = {'members': roster, 'messages': context}
+            prompt = (
+                'Respond to the latest addressed message in this persistent conversation. '
+                'members lists every conversation bot with its stable id and display_name. '
+                'messages[].author is user or a member id. '
+                'Return your user-facing answer. For a useful handoff, mention exactly '
+                'one member with @{id} from members (never nicknames or display names); '
+                'the client shows the display name.\n\n'
+                + json.dumps(payload, ensure_ascii=False)
+            )
             receipt = await self.call('submit', principal_id=d['owner'], profile=profile['name'], conversation_key=key,
                             operation_key=self.operation(d), text=prompt, title=d['title'], max_turns=current['max_turns'])
             self.record_delivery({**d, 'binding_key': key}, receipt)

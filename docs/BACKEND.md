@@ -98,14 +98,24 @@ for `bot_coms_turn_taking`). Messaging calls `ctx.llm.acomplete_structured`
 through that task; it never constructs a second LLM client or starts `hermes chat`
 for the selector.
 
-Pin a cheap/fast model in Hermes `config.yaml`:
+Pin an optional dedicated model in Hermes `config.yaml`. When that slot is
+unset (`provider: auto` with empty model), messaging routes through the
+built-in `title_generation` auxiliary task instead:
 
 ```yaml
+# Optional dedicated pin — omit to reuse title_generation's model.
 auxiliary:
   bot_coms_turn_taking:
-    provider: auto
-    model: vendor/fast-small
+    provider: openai-codex
+    model: gpt-5.6-luna
     timeout: 8
+
+# Required so the plugin may borrow title_generation when the pin is unset:
+plugins:
+  entries:
+    bot-coms:
+      llm:
+        allow_task_override: true
 ```
 
 Messaging `plugin-data/bot-coms-messaging/config.json` mode:

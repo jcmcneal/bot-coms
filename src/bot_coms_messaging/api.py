@@ -241,14 +241,17 @@ def create_router(root_factory=default_root, runtime_factory=None):
     def events(after: int = Query(0, ge=0), ctx=Depends(context)):
         result = invoke(ctx[0].events, ctx[2], after)
         # Events contain only IDs; revalidate membership before publishing even those IDs.
+        # conversation.deleted survives after the row is gone, so skip authorize for it.
         visible = []
         for event in result['events']:
+            if event.get('kind') == 'conversation.deleted':
+                visible.append(event)
+                continue
             try: authorize(ctx, event['conversation'])
             except HTTPException: continue
             visible.append(event)
         result['events'] = visible
         return result
-
     return router
 
 

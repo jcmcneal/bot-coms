@@ -105,12 +105,46 @@ def test_select_speaker_uses_stub_and_persists_shape():
             messages=[{'id': 'm', 'sequence': 1, 'author': 'user', 'body': 'hi'}],
             unanswered_human=True,
             remaining_wakes=2,
+            auxiliary={},
         )
     )
     assert decision.speaker == 'designer-id'
     assert decision.used_model is True
-    assert llm.calls[0]['task'] == turn_taking.AUX_TASK
+    assert llm.calls[0]['task'] == turn_taking.TITLE_FALLBACK_TASK
     assert llm.calls[0]['max_tokens'] == 64
+
+
+def test_resolve_selector_task_pin_vs_title_fallback():
+    assert turn_taking.resolve_selector_task({}) == turn_taking.TITLE_FALLBACK_TASK
+    assert turn_taking.resolve_selector_task(
+        {'bot_coms_turn_taking': {'provider': 'auto', 'model': ''}}
+    ) == turn_taking.TITLE_FALLBACK_TASK
+    assert turn_taking.resolve_selector_task(
+        {'bot_coms_turn_taking': {'provider': 'openai-codex', 'model': 'gpt-5.6-luna'}}
+    ) == turn_taking.AUX_TASK
+    assert turn_taking.resolve_selector_task(
+        {'bot_coms_turn_taking': {'provider': 'auto', 'model': 'cheap-model'}}
+    ) == turn_taking.AUX_TASK
+    assert turn_taking.resolve_selector_task(
+        {'bot_coms_turn_taking': {'base_url': 'http://127.0.0.1:1234'}}
+    ) == turn_taking.AUX_TASK
+
+
+def test_select_speaker_uses_pinned_turn_taking_task():
+    llm = StubLlm(parsed={'action': 'yield', 'reason': 'nothing_new'})
+    asyncio.run(
+        turn_taking.select_speaker(
+            llm,
+            members=[{'id': 'swe-id'}],
+            member_ids={'swe-id'},
+            default_responder='swe-id',
+            messages=[],
+            unanswered_human=False,
+            remaining_wakes=1,
+            auxiliary={'bot_coms_turn_taking': {'provider': 'openai-codex', 'model': 'gpt-5.6-luna'}},
+        )
+    )
+    assert llm.calls[0]['task'] == turn_taking.AUX_TASK
 
 
 def test_select_speaker_timeout_falls_back():
@@ -124,6 +158,7 @@ def test_select_speaker_timeout_falls_back():
             messages=[],
             unanswered_human=True,
             remaining_wakes=1,
+            auxiliary={},
         )
     )
     assert decision.action == 'select'

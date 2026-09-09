@@ -1,10 +1,8 @@
 """Predictive turn-taking before expensive agent session admission.
 
 Deterministic routing wins first. A Hermes plugin auxiliary structured call
-runs for group user messages with empty recipients (no To: selection). The
-message is persisted without a dispatch; the selector chooses one member or
-yields. Membership and authority are validated outside the model. Call failure
-falls back to the conversation default responder.
+runs only for ambiguous group turns (default-responder wake with no explicit
+recipients). Membership and authority are validated outside the model.
 """
 from __future__ import annotations
 
@@ -14,6 +12,7 @@ from typing import Any, Optional, Protocol
 
 POLICY_VERSION = "1"
 AUX_TASK = "bot_coms_turn_taking"
+TITLE_FALLBACK_TASK = "title_generation"
 MAX_VIEW_MESSAGES = 20
 MAX_BODY_CHARS = 400
 
@@ -171,6 +170,36 @@ def _fallback(
     )
 
 
+def _is_aux_task_pinned(block) -> bool:
+    """True when the operator explicitly set a model/provider/base_url for the slot."""
+    if not isinstance(block, dict):
+        return False
+    model = str(block.get("model") or "").strip()
+    provider = str(block.get("provider") or "").strip().lower()
+    base_url = str(block.get("base_url") or "").strip()
+    if model or base_url:
+        return True
+    return bool(provider) and provider != "auto"
+
+
+def resolve_selector_task(auxiliary: Optional[dict] = None) -> str:
+    """Use bot_coms_turn_taking only when pinned; otherwise title_generation."""
+    aux = auxiliary if isinstance(auxiliary, dict) else {}
+    if _is_aux_task_pinned(aux.get(AUX_TASK)):
+        return AUX_TASK
+    return TITLE_FALLBACK_TASK
+
+
+def load_auxiliary_config() -> dict:
+    try:
+        from hermes_cli.config import load_config_readonly
+        cfg = load_config_readonly() or {}
+        aux = cfg.get("auxiliary")
+        return aux if isinstance(aux, dict) else {}
+    except Exception:
+        return {}
+
+
 async def select_speaker(
     llm: Optional[LlmSelector],
     *,
@@ -180,6 +209,7 @@ async def select_speaker(
     messages: list[dict],
     unanswered_human: bool,
     remaining_wakes: int,
+    auxiliary: Optional[dict] = None,
 ) -> TurnDecision:
     """Run one structured aux call, or fall back when llm is missing/fails."""
     if llm is None:
@@ -191,9 +221,11 @@ async def select_speaker(
         unanswered_human=unanswered_human,
         remaining_wakes=remaining_wakes,
     )
+    aux = auxiliary if auxiliary is not None else load_auxiliary_config()
+    task = resolve_selector_task(aux)
     try:
         result = await llm.acomplete_structured(
-            task=AUX_TASK,
+            task=task,
             purpose="bot-coms.turn-taking",
             temperature=0,
             max_tokens=64,
