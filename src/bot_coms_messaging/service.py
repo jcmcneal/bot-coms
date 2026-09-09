@@ -1,7 +1,7 @@
 """Durable messaging scheduler hosted by the existing Hermes dashboard backend.
 
-SQLite owns admission and publication; Hermes owns native sessions and turns.
-There is no CLI child, message spool, or independently supervised service.
+SQLite owns admission and publication.  The plugin owns session bindings and
+uses Hermes's supported CLI resume interface; there is no supervised worker.
 """
 from __future__ import annotations
 
@@ -16,9 +16,9 @@ from .config import allowed, load_config
 from .store import Problem, Store
 
 
-def native_runtime():
-    from tui_gateway.plugin_sessions import get_session_service
-    return get_session_service(plugin_id='bot-coms-messaging')
+def native_runtime(root):
+    from bot_coms_runtime.cli_sessions import CliSessionRuntime
+    return CliSessionRuntime(Path(root).parent.parent, 'bot-coms-messaging')
 
 
 class MessagingService:
@@ -76,8 +76,11 @@ class MessagingService:
         self._stopping.set()
         if self._task:
             await self._task
-        # Hermes owns admitted turns and their recovery. Shutdown never launches
-        # or repeats them, and does not wait for a model to finish.
+        # The plugin owns admitted child processes. Shutdown fences/reconciles
+        # them; it never repeats an uncertain operation.
+        close = getattr(self.runtime, 'close', None)
+        if close is not None:
+            close(cancel=True)
         with self.store.db() as db:
             db.execute("DELETE FROM meta WHERE key='heartbeat'")
         self.release()
@@ -153,8 +156,13 @@ class MessagingService:
             return
         with self.store.db() as db:
             binding = db.execute('SELECT session_id FROM session_bindings WHERE binding_key=?', (d['binding_key'],)).fetchone()
-            if binding is None or binding['session_id'] != receipt.get('session_id'):
-                raise RuntimeError('Native runtime returned a different session identity')
+            session_id = receipt.get('session_id')
+            if binding is None:
+                raise RuntimeError('Missing plugin session binding')
+            if binding['session_id'] and session_id and binding['session_id'] != session_id:
+                raise RuntimeError('CLI runtime returned a different session identity')
+            if session_id and not binding['session_id']:
+                db.execute('UPDATE session_bindings SET session_id=? WHERE binding_key=?', (session_id, d['binding_key']))
             db.execute('INSERT OR IGNORE INTO session_messages SELECT ?,message FROM dispatch_context WHERE dispatch=?',
                        (d['binding_key'], d['id']))
 
@@ -207,10 +215,11 @@ class MessagingService:
                 return False
         session = await self.call('ensure_session', principal_id=d['owner'], profile=profile['name'], conversation_key=key, title=d['title'])
         with self.store.db() as db:
-            if binding['session_id'] and binding['session_id'] != session['session_id']:
+            if binding['session_id'] and session['session_id'] and binding['session_id'] != session['session_id']:
                 db.execute('UPDATE session_bindings SET blocked=1 WHERE binding_key=?', (key,))
                 return False
-            db.execute('UPDATE session_bindings SET session_id=? WHERE binding_key=?', (session['session_id'], key))
+            if session['session_id']:
+                db.execute('UPDATE session_bindings SET session_id=? WHERE binding_key=?', (session['session_id'], key))
             trigger = db.execute('SELECT sequence FROM messages WHERE id=?', (d['message'],)).fetchone()[0]
             context = [dict(r) for r in db.execute("""SELECT m.id,m.sequence,m.author,m.body FROM messages m
                 WHERE m.conversation=? AND (m.sequence<=? OR m.author!='user')
@@ -240,15 +249,10 @@ class MessagingService:
             # This native exception is guaranteed to precede journal admission.
             # An absent operation receipt permits retrying a busy session; any
             # unknown admission failure remains ambiguous and is never replayed.
-            try:
-                from tui_gateway.plugin_sessions import SessionServiceConflict
-            except ImportError:
-                SessionServiceConflict = ()
-            if isinstance(error, SessionServiceConflict):
-                receipt = await self.call('status', principal_id=d['owner'], operation_key=self.operation(d))
-                if receipt is None:
-                    with self.store.db() as db:
-                        db.execute("UPDATE dispatches SET state='queued',admitted_at=NULL WHERE id=? AND state='running'", (d['id'],))
+            receipt = await self.call('status', principal_id=d['owner'], operation_key=self.operation(d))
+            if receipt is None:
+                with self.store.db() as db:
+                    db.execute("UPDATE dispatches SET state='queued',admitted_at=NULL WHERE id=? AND state='running'", (d['id'],))
             # A lost admission response might already have started tools. The next
             # tick consults status and never resubmits this operation.
             pass

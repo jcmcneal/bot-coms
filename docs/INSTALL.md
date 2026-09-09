@@ -58,7 +58,7 @@ Required at tool-call time: `BOT_COMS_SPOOL_ROOT`, `BOT_COMS_PEER_ID`. Optional:
 ## Persistent messaging
 
 Authenticated DMs and multi-bot groups use the sibling package `bot_coms_messaging`
-(same wheel). Execution uses Hermes's backend plugin session service; do **not** enable
+(same wheel). Execution uses Hermes's public CLI session resume interface; do **not** enable
 `bot-coms-board` just to get messaging. This package still does not rewrite
 Hermes `plugins.enabled`.
 
@@ -117,10 +117,10 @@ Without auto-enroll, list every messaging profile explicitly (legacy). The
 reserved spool peer `inbox` represents the authenticated dashboard client; do
 not assign that peer name to a bot profile.
 
-3. Use a Hermes build with `tui_gateway.plugin_sessions` and its dashboard
+3. Use a Hermes build with `hermes chat --resume` and its dashboard
    lifecycle installation. The plugin starts its messaging scheduler inside
    the existing backend. Each participant resumes an exact conversation session.
-   A build without the session service reports unavailable; it never falls back
+   A build without the public CLI reports unavailable; it never falls back
    to launching CLI workers. See [Backend execution and migration](BACKEND.md).
 
 4. Restart the dashboard when active work can safely be interrupted. Clients

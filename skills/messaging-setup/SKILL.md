@@ -53,7 +53,7 @@ Or from GitHub:
 ```
 
 Confirm `bot-coms-messaging` is on `PATH` and Hermes provides the backend plugin
-session service (`tui_gateway.plugin_sessions`). A missing service requires a
+CLI session resume interface (`hermes chat --resume`). A missing interface requires a
 compatible Hermes build; do not install a standalone worker as a fallback.
 
 ### 2. Install the dashboard plugin

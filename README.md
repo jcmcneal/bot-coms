@@ -8,10 +8,10 @@ This project does **not** depend on the Hermes A2A gateway or any product reposi
 
 **Persistent messaging** lives in the sibling package `bot_coms_messaging` (same wheel, optional `[messaging]` extra): authenticated DMs and multi-bot groups with SQLite dispatch and persistent Hermes sessions. Execution belongs to the existing Hermes backend and does **not** require `bot_coms_board`. See [`docs/INSTALL.md`](docs/INSTALL.md#persistent-messaging).
 
-**Hermes team delivery** uses the same backend session service. Install the backend
+**Hermes team delivery** uses the same plugin-owned session adapter. Install the backend
 dashboard with `bot-coms install-dashboard --hermes-root ...`; no launchd wake,
 messaging, or reconciliation sidecar is required. This needs the matching Hermes
-plugin session service implementation. See [backend setup and migration](docs/BACKEND.md).
+public CLI with session resume. See [backend setup and migration](docs/BACKEND.md).
 
 MVP requires a **local POSIX** disk (APFS/ext4). NFS and other shared filesystems are unsupported.
 

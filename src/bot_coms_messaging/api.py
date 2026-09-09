@@ -45,7 +45,7 @@ def create_router(root_factory=default_root, runtime_factory=None):
         try:
             root = root_factory()
             load_config(root)
-            runtime = (runtime_factory or native_runtime)()
+            runtime = runtime_factory() if runtime_factory is not None else native_runtime(root)
             service = MessagingService(root, runtime)
             await service.start()
         except (Problem, ImportError, RuntimeError):

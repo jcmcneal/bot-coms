@@ -121,7 +121,7 @@ acknowledged without launching work. Completed assignments are immutable.
 
 Internal wakes save durable admissions in `team-runtime.sqlite3`. The existing
 Hermes backend discovers those admissions and resumes an exact assignment/peer
-session through the native plugin session service. It does not launch a wake
+session through the plugin-owned CLI session adapter. It does not launch a wake
 supervisor or fresh CLI conversation. A backend lease prevents competing
 schedulers; operation keys prevent lost admission responses from starting the
 same turn twice. Uncertain native execution requires inspection before retry.

@@ -1,15 +1,15 @@
 # Backend-owned execution
 
-This implementation requires the Hermes backend plugin session service
-(`tui_gateway.plugin_sessions`, installed by the dashboard lifespan). Install the
-matching Hermes integration before activating these bot-coms changes. The
-transport-only library remains usable without Hermes or FastAPI.
+This implementation requires only Hermes's public `hermes chat --resume`
+interface. The dashboard plugin owns its binding and operation journals, then
+starts bounded CLI turns inside its existing lifespan. No Hermes-core patch is
+required. The transport-only library remains usable without Hermes or FastAPI.
 
 ## Ownership
 
-The existing Hermes backend owns messaging and team scheduling, native session
-execution, and restart reconciliation. No messaging, wake, or reconcile sidecar
-is installed. The schedulers run only inside the backend's tracked lifespan.
+The existing Hermes dashboard owns the plugin lifecycle; bot-coms owns messaging
+and team scheduling, CLI session execution, and restart reconciliation. No
+messaging, wake, or reconcile sidecar is installed.
 
 SQLite remains durable: messaging stores messages, dispatches, session bindings,
 and delivered context; the team board retains assignments, contracts, reviews,
