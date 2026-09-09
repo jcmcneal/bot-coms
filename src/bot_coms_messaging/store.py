@@ -61,7 +61,7 @@ class Store:
         self.path = self.root / 'messages.sqlite'
         with self.db() as db:
             version = db.execute('PRAGMA user_version').fetchone()[0]
-            if version > 3:
+            if version > 4:
                 raise RuntimeError('Messaging database requires a newer adapter')
             if version == 0:
                 db.executescript(_SCHEMA_V2)
@@ -94,6 +94,20 @@ class Store:
                     WHEN NEW.state='running' AND (SELECT value FROM meta WHERE key='executor_mode')='backend'
                     BEGIN SELECT CASE WHEN messaging_backend_connection()!=1 THEN RAISE(ABORT,'Backend executor required') END; END;
                     PRAGMA user_version = 3;
+                """)
+            if version < 4:
+                db.executescript("""
+                    CREATE TABLE IF NOT EXISTS turn_decisions (
+                        message TEXT PRIMARY KEY REFERENCES messages(id),
+                        input_seq INTEGER NOT NULL,
+                        policy_version TEXT NOT NULL,
+                        model TEXT NOT NULL DEFAULT '',
+                        action TEXT NOT NULL,
+                        speaker TEXT,
+                        reason TEXT NOT NULL,
+                        shadow INTEGER NOT NULL DEFAULT 0,
+                        created REAL NOT NULL);
+                    PRAGMA user_version = 4;
                 """)
         self.path.chmod(0o600)
 
@@ -358,6 +372,89 @@ class Store:
                 (new_id(), conversation['id'], bot_mid, profile, time.time(),
                  parent['id'], next_hop, origin))
             wakes += 1
+
+    def get_turn_decision(self, message_id: str, input_seq: int):
+        """Return a persisted decision for message+sequence, or None if stale/missing."""
+        with self.db() as db:
+            row = db.execute(
+                'SELECT * FROM turn_decisions WHERE message=? AND input_seq=?',
+                (message_id, input_seq),
+            ).fetchone()
+            return dict(row) if row else None
+
+    def save_turn_decision(
+        self,
+        message_id: str,
+        *,
+        input_seq: int,
+        policy_version: str,
+        model: str,
+        action: str,
+        speaker: str | None,
+        reason: str,
+        shadow: bool,
+    ):
+        with self.db() as db:
+            db.execute(
+                '''INSERT INTO turn_decisions(
+                    message,input_seq,policy_version,model,action,speaker,reason,shadow,created)
+                   VALUES(?,?,?,?,?,?,?,?,?)
+                   ON CONFLICT(message) DO UPDATE SET
+                    input_seq=excluded.input_seq,
+                    policy_version=excluded.policy_version,
+                    model=excluded.model,
+                    action=excluded.action,
+                    speaker=excluded.speaker,
+                    reason=excluded.reason,
+                    shadow=excluded.shadow,
+                    created=excluded.created''',
+                (
+                    message_id,
+                    input_seq,
+                    policy_version,
+                    model or '',
+                    action,
+                    speaker,
+                    reason,
+                    int(shadow),
+                    time.time(),
+                ),
+            )
+
+    def retarget_dispatch(self, dispatch_id: str, profile: str) -> bool:
+        """Move a queued dispatch to another member. Fails if the target already has a row."""
+        with self.db() as db:
+            d = db.execute('SELECT * FROM dispatches WHERE id=? AND state=?', (dispatch_id, 'queued')).fetchone()
+            if d is None:
+                return False
+            if d['profile'] == profile:
+                return True
+            clash = db.execute(
+                'SELECT id FROM dispatches WHERE message=? AND profile=?',
+                (d['message'], profile),
+            ).fetchone()
+            if clash is not None:
+                return False
+            changed = db.execute(
+                "UPDATE dispatches SET profile=? WHERE id=? AND state='queued'",
+                (profile, dispatch_id),
+            ).rowcount
+            return bool(changed)
+
+    def yield_dispatch(self, dispatch_id: str) -> bool:
+        """Complete a queued dispatch without a public reply or agent run."""
+        with self.db() as db:
+            d = db.execute('SELECT * FROM dispatches WHERE id=? AND state=?', (dispatch_id, 'queued')).fetchone()
+            if d is None:
+                return False
+            row = db.execute('SELECT * FROM conversations WHERE id=?', (d['conversation'],)).fetchone()
+            db.execute(
+                "UPDATE dispatches SET state='completed', detail='yielded' WHERE id=? AND state='queued'",
+                (dispatch_id,),
+            )
+            if row is not None:
+                self._event(db, row, 'run.updated')
+            return True
 
     def events(self, owner, after):
         with self.db() as db:

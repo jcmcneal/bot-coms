@@ -26,9 +26,28 @@ from hermes_bot_coms.tools import (
     bot_coms_status,
 )
 
+# Host-owned PluginLlm from the last successful register(ctx). Messaging uses
+# this for turn-taking without constructing PluginLlm itself.
+_plugin_llm = None
+
+TURN_TAKING_TASK = "bot_coms_turn_taking"
+
+
+def get_plugin_llm():
+    """Return the PluginLlm bound at plugin register time, or None."""
+    return _plugin_llm
+
 
 def register(ctx) -> None:
-    """Register bot-coms tools. Isolated from other gateways."""
+    """Register bot-coms tools and the turn-taking auxiliary LLM task."""
+    global _plugin_llm
+    _plugin_llm = ctx.llm
+    ctx.register_auxiliary_task(
+        TURN_TAKING_TASK,
+        display_name="Turn taking",
+        description="Select next messaging speaker or yield",
+        defaults={"provider": "auto", "model": "", "timeout": 8},
+    )
     for name, schema, handler, desc in (
         ("bot_coms_request", REQUEST_SCHEMA, bot_coms_request, "Request/wait path for agent callers"),
         ("bot_coms_emit", EMIT_SCHEMA, bot_coms_emit, "Fire-and-forget enqueue for agent callers"),

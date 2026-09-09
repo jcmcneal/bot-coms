@@ -80,9 +80,45 @@ PYTHONPATH=/path/to/hermes:/path/to/bot-coms/src:/path/to/bot-coms/adapters \
 ```
 
 These checks validate code integration; they do not establish live provider or
-deployment health. Predictive group speaker selection is a follow-up to the
-execution migration. Existing explicit/default routing and bounded mentions are
-preserved in this first replacement.
+deployment health. Existing explicit/default routing and bounded mentions remain
+the primary path. Predictive group speaker selection is available as a follow-on
+admit-time aux call (see below).
+
+
+## Turn-taking prediction
+
+Before admitting an ambiguous group wake (user message with empty recipients,
+so only the default responder was queued), the messaging backend may ask a
+Hermes plugin auxiliary model which member should speak — or whether to yield.
+
+Registration lives on the `bot-coms` tools plugin (`ctx.register_auxiliary_task`
+for `bot_coms_turn_taking`). Messaging calls `ctx.llm.acomplete_structured`
+through that task; it never constructs a second LLM client or starts `hermes chat`
+for the selector.
+
+Pin a cheap/fast model in Hermes `config.yaml`:
+
+```yaml
+auxiliary:
+  bot_coms_turn_taking:
+    provider: auto
+    model: vendor/fast-small
+    timeout: 8
+```
+
+Messaging `plugin-data/bot-coms-messaging/config.json` mode:
+
+| `turn_taking_mode` | Behavior |
+| --- | --- |
+| `off` | Never call the selector (legacy admit path). |
+| `shadow` | Call and persist the decision; still admit the original dispatch. |
+| `on` (default) | Apply select / retarget / yield before session submit. |
+
+DMs, explicit recipients, and `@mention` hops skip the selector. Team-board
+assignment / review / acceptance never consults it. Unknown speaker ids and
+timeouts fall back to the default responder when a human request is unanswered,
+otherwise yield. Decisions are stored in SQLite `turn_decisions` and reused for
+the same message sequence so a tick replay does not re-ask the model.
 
 
 ## Current integration boundaries
@@ -98,3 +134,6 @@ Task-local routing reaches local terminal processes and the matching
 Hermes and bot-coms when using `agent_screen`. Remote terminal environments do not
 yet receive this bridge, and isolated compute execution is rejected before native
 admission. The existing Hermes backend must remain running for delivery.
+
+Conduit speaking / waiting / yielded UI states and sequential “everyone’s views”
+queues remain out of scope for this selector slice.

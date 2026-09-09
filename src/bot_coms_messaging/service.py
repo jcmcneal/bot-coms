@@ -14,6 +14,7 @@ from pathlib import Path
 
 from .config import allowed, load_config
 from .store import Problem, Store
+from . import turn_taking
 
 
 def native_runtime(root):
@@ -21,10 +22,20 @@ def native_runtime(root):
     return CliSessionRuntime(Path(root).parent.parent, 'bot-coms-messaging')
 
 
+def default_selector_llm():
+    """Resolve host PluginLlm from the bot-coms tools plugin when available."""
+    try:
+        from hermes_bot_coms import get_plugin_llm
+        return get_plugin_llm()
+    except ImportError:
+        return None
+
+
 class MessagingService:
-    def __init__(self, root: Path, runtime):
+    def __init__(self, root: Path, runtime, selector=None):
         self.root, self.runtime = Path(root), runtime
         self.store = Store(root)
+        self.selector = selector
         self._leases = []
         self._task = None
         self._stopping = asyncio.Event()
@@ -114,6 +125,112 @@ class MessagingService:
         return (d['profile'] in active and d['profile'] in json.loads(row['profiles']) and
                 set(json.loads(row['profiles'])).issubset(accessible))
 
+    def _selector_llm(self):
+        if self.selector is not None:
+            return self.selector
+        return default_selector_llm()
+
+    async def apply_turn_taking(self, d, config):
+        """Classify an ambiguous group wake before session admission.
+
+        Returns an updated dispatch dict, or None when the turn was yielded
+        (no further admit). Shadow mode always returns the original profile.
+        """
+        mode = config.get('turn_taking_mode', 'on')
+        if mode == 'off':
+            return d
+        with self.store.db() as db:
+            conversation = db.execute(
+                'SELECT * FROM conversations WHERE id=?', (d['conversation'],)
+            ).fetchone()
+            trigger = db.execute('SELECT * FROM messages WHERE id=?', (d['message'],)).fetchone()
+        if conversation is None or trigger is None:
+            return d
+        recipients = json.loads(trigger['recipients'] or '[]')
+        route = turn_taking.classify_route(
+            conversation_kind=conversation['kind'],
+            recipients=recipients,
+            parent_dispatch=d.get('parent_dispatch'),
+        )
+        if route != 'ambiguous':
+            return d
+        input_seq = trigger['sequence']
+        # Stale if a newer human message landed after this trigger was queued.
+        with self.store.db() as db:
+            latest_user = db.execute(
+                "SELECT coalesce(max(sequence),0) FROM messages WHERE conversation=? AND author='user'",
+                (d['conversation'],),
+            ).fetchone()[0]
+        if latest_user > input_seq:
+            # A newer human message owns the conversation; yield this stale wake.
+            if mode == 'on':
+                self.store.yield_dispatch(d['id'])
+                return None
+            return d
+        cached = self.store.get_turn_decision(d['message'], input_seq)
+        if cached is not None:
+            decision = turn_taking.TurnDecision(
+                action=cached['action'],
+                speaker=cached['speaker'],
+                reason=cached['reason'],
+                model=cached['model'] or '',
+                policy_version=cached['policy_version'],
+                used_model=False,
+            )
+        else:
+            members = json.loads(conversation['profiles'])
+            member_ids = set(members)
+            roster = [
+                p for p in config['profiles']
+                if isinstance(p, dict) and p.get('id') in member_ids
+            ]
+            if not roster:
+                roster = [{'id': pid, 'name': pid, 'display_name': pid} for pid in members]
+            with self.store.db() as db:
+                history = [
+                    dict(r) for r in db.execute(
+                        'SELECT id,sequence,author,body FROM messages WHERE conversation=? '
+                        'ORDER BY sequence DESC LIMIT ?',
+                        (d['conversation'], turn_taking.MAX_VIEW_MESSAGES),
+                    )
+                ]
+                history.reverse()
+                wakes = db.execute(
+                    'SELECT count(*) FROM dispatches WHERE origin_message=?',
+                    (d.get('origin_message') or d['message'],),
+                ).fetchone()[0]
+            remaining = max(0, config['max_wakes_per_origin'] - wakes)
+            unanswered = trigger['author'] == 'user'
+            decision = await turn_taking.select_speaker(
+                self._selector_llm(),
+                members=roster,
+                member_ids=member_ids,
+                default_responder=conversation['responder'],
+                messages=history,
+                unanswered_human=unanswered,
+                remaining_wakes=remaining,
+            )
+            self.store.save_turn_decision(
+                d['message'],
+                input_seq=input_seq,
+                policy_version=decision.policy_version,
+                model=decision.model,
+                action=decision.action,
+                speaker=decision.speaker,
+                reason=decision.reason,
+                shadow=(mode == 'shadow'),
+            )
+        if mode == 'shadow':
+            return d
+        if decision.action == 'yield':
+            self.store.yield_dispatch(d['id'])
+            return None
+        if decision.action == 'select' and decision.speaker and decision.speaker != d['profile']:
+            if not self.store.retarget_dispatch(d['id'], decision.speaker):
+                return d
+            return {**d, 'profile': decision.speaker}
+        return d
+
     async def settle(self, d, config):
         principal = d['owner']
         timed_out = d.get('admitted_at') is not None and time.time() - d['admitted_at'] >= config['run_timeout_seconds']
@@ -199,7 +316,14 @@ class MessagingService:
             if not self.authorized(config, d):
                 self.store.run_action(d['owner'], d['id'], 'cancel')
                 continue
-            if await self.admit(d, config):
+            decided = await self.apply_turn_taking(d, config)
+            if decided is None:
+                admitted.add(d['conversation'])
+                continue
+            if not self.authorized(config, decided):
+                self.store.run_action(d['owner'], d['id'], 'cancel')
+                continue
+            if await self.admit(decided, config):
                 admitted.add(d['conversation'])
         with self.store.db() as db:
             db.execute("INSERT OR REPLACE INTO meta VALUES('heartbeat',?)", (str(time.time()),))

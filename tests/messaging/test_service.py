@@ -56,10 +56,26 @@ def tick(service):
     asyncio.run(service.tick())
 
 
-def service(root, runtime=None):
-    result = MessagingService(root, runtime or Runtime())
+def service(root, runtime=None, selector=None):
+    result = MessagingService(root, runtime or Runtime(), selector=selector)
     result.acquire()
     return result
+
+
+def set_mode(root, mode):
+    config = json.loads((root / 'config.json').read_text())
+    config['turn_taking_mode'] = mode
+    (root / 'config.json').write_text(json.dumps(config))
+
+
+class StubSelector:
+    def __init__(self, parsed):
+        self.parsed = parsed
+        self.calls = []
+
+    async def acomplete_structured(self, **kwargs):
+        self.calls.append(kwargs)
+        return SimpleNamespace(parsed=self.parsed, model='stub-model')
 
 
 def test_two_sends_reuse_session_and_send_only_unseen_context(root):
@@ -322,3 +338,103 @@ def test_disabled_other_group_member_does_not_revoke_active_recipient(root):
         assert backend.store.history('test:alice', group['id'])['runs'][0]['status'] == 'completed'
     finally:
         backend.release()
+
+
+def test_shadow_mode_records_decision_but_still_submits(root):
+    set_mode(root, 'shadow')
+    selector = StubSelector({'action': 'yield', 'reason': 'nothing_new'})
+    backend = service(root, selector=selector)
+    try:
+        group = backend.store.groups('test:alice', 'Group', ['swe-id', 'designer-id'], 'swe-id', 'g')
+        backend.store.send('test:alice', 'first', 'hello everyone', [], cid=group['id'])
+        tick(backend)
+        assert len(selector.calls) == 1
+        assert len(backend.runtime.calls) == 1
+        with backend.store.db() as db:
+            row = db.execute('SELECT action,shadow FROM turn_decisions').fetchone()
+            assert row['action'] == 'yield'
+            assert row['shadow'] == 1
+    finally:
+        backend.release()
+
+
+def test_on_mode_yield_skips_submit(root):
+    set_mode(root, 'on')
+    selector = StubSelector({'action': 'yield', 'reason': 'nothing_new'})
+    backend = service(root, selector=selector)
+    try:
+        group = backend.store.groups('test:alice', 'Group', ['swe-id', 'designer-id'], 'swe-id', 'g')
+        backend.store.send('test:alice', 'first', 'hello everyone', [], cid=group['id'])
+        tick(backend)
+        assert selector.calls
+        assert backend.runtime.calls == []
+        runs = backend.store.history('test:alice', group['id'])['runs']
+        assert runs[0]['status'] == 'completed'
+        assert runs[0]['detail'] == 'yielded'
+    finally:
+        backend.release()
+
+
+def test_on_mode_retargets_to_selected_member(root):
+    set_mode(root, 'on')
+    selector = StubSelector({'action': 'select', 'speaker': 'designer-id', 'reason': 'relevant'})
+    backend = service(root, selector=selector)
+    try:
+        group = backend.store.groups('test:alice', 'Group', ['swe-id', 'designer-id'], 'swe-id', 'g')
+        backend.store.send('test:alice', 'first', 'design question', [], cid=group['id'])
+        tick(backend)
+        assert len(backend.runtime.calls) == 1
+        assert backend.runtime.calls[0]['profile'] == 'designer'
+        with backend.store.db() as db:
+            assert db.execute('SELECT profile FROM dispatches').fetchone()[0] == 'designer-id'
+    finally:
+        backend.release()
+
+
+def test_explicit_recipients_skip_selector(root):
+    set_mode(root, 'on')
+    selector = StubSelector({'action': 'yield', 'reason': 'nothing_new'})
+    backend = service(root, selector=selector)
+    try:
+        group = backend.store.groups('test:alice', 'Group', ['swe-id', 'designer-id'], 'swe-id', 'g')
+        backend.store.send('test:alice', 'first', 'hello', ['designer-id'], cid=group['id'])
+        tick(backend)
+        assert selector.calls == []
+        assert len(backend.runtime.calls) == 1
+        assert backend.runtime.calls[0]['profile'] == 'designer'
+    finally:
+        backend.release()
+
+
+def test_cached_decision_avoids_second_model_call(root):
+    set_mode(root, 'on')
+    selector = StubSelector({'action': 'select', 'speaker': 'swe-id', 'reason': 'ack'})
+    backend = service(root, selector=selector)
+    try:
+        group = backend.store.groups('test:alice', 'Group', ['swe-id', 'designer-id'], 'swe-id', 'g')
+        result = backend.store.send('test:alice', 'first', 'hello', [], cid=group['id'])
+        mid = result['message']['id']
+        with backend.store.db() as db:
+            seq = db.execute('SELECT sequence FROM messages WHERE id=?', (mid,)).fetchone()[0]
+        backend.store.save_turn_decision(
+            mid,
+            input_seq=seq,
+            policy_version='1',
+            model='cached',
+            action='yield',
+            speaker=None,
+            reason='nothing_new',
+            shadow=False,
+        )
+        tick(backend)
+        assert selector.calls == []
+        assert backend.runtime.calls == []
+    finally:
+        backend.release()
+
+
+def test_schema_v4_turn_decisions_table(root):
+    store = Store(root)
+    with store.db() as db:
+        assert db.execute('PRAGMA user_version').fetchone()[0] == 4
+        db.execute('SELECT message,input_seq,action,speaker,reason,shadow FROM turn_decisions LIMIT 0')

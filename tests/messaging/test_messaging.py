@@ -361,8 +361,9 @@ def test_schema_migrates_v1_dispatches_to_v2(tmp_path):
     db.close()
     s = Store(tmp_path)
     with s.db() as db:
-        assert db.execute('PRAGMA user_version').fetchone()[0] == 3
+        assert db.execute('PRAGMA user_version').fetchone()[0] == 4
         row = db.execute('SELECT hop, origin_message, parent_dispatch FROM dispatches WHERE id=?', ('d1',)).fetchone()
         assert row['hop'] == 0
         assert row['origin_message'] == 'm1'
         assert row['parent_dispatch'] is None
+        db.execute('SELECT message,input_seq,action FROM turn_decisions LIMIT 0')

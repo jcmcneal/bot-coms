@@ -175,6 +175,10 @@ def load_config(root: Path) -> dict:
         if type(value) is not int or not lower <= value <= upper:
             raise Problem(503, f'Invalid {field}')
         config[field] = value
+    mode = config.get('turn_taking_mode', 'on')
+    if mode not in ('off', 'shadow', 'on'):
+        raise Problem(503, 'Invalid turn_taking_mode')
+    config['turn_taking_mode'] = mode
     return config
 
 
