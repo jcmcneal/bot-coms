@@ -1,8 +1,10 @@
 """Predictive turn-taking before expensive agent session admission.
 
 Deterministic routing wins first. A Hermes plugin auxiliary structured call
-runs only for ambiguous group turns (default-responder wake with no explicit
-recipients). Membership and authority are validated outside the model.
+runs for group user messages with empty recipients (no To: selection). The
+message is persisted without a dispatch; the selector chooses one member or
+yields. Membership and authority are validated outside the model. Call failure
+falls back to the conversation default responder.
 """
 from __future__ import annotations
 

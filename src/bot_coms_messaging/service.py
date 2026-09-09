@@ -130,11 +130,143 @@ class MessagingService:
             return self.selector
         return default_selector_llm()
 
+    async def _decide_empty_to(self, message, config):
+        """Run or reuse turn-taking for a group empty-To user message."""
+        mode = config.get('turn_taking_mode', 'on')
+        input_seq = message['sequence']
+        default = message['responder']
+        cached = self.store.get_turn_decision(message['id'], input_seq)
+        if cached is not None:
+            return turn_taking.TurnDecision(
+                action=cached['action'],
+                speaker=cached['speaker'],
+                reason=cached['reason'],
+                model=cached['model'] or '',
+                policy_version=cached['policy_version'],
+                used_model=False,
+            ), mode
+        if mode == 'off':
+            decision = turn_taking.TurnDecision(
+                action='select',
+                speaker=default,
+                reason='ack',
+                model='',
+                used_model=False,
+            )
+            self.store.save_turn_decision(
+                message['id'],
+                input_seq=input_seq,
+                policy_version=decision.policy_version,
+                model=decision.model,
+                action=decision.action,
+                speaker=decision.speaker,
+                reason=decision.reason,
+                shadow=False,
+            )
+            return decision, mode
+        members = json.loads(message['member_profiles'])
+        member_ids = set(members)
+        roster = [
+            p for p in config['profiles']
+            if isinstance(p, dict) and p.get('id') in member_ids
+        ]
+        if not roster:
+            roster = [{'id': pid, 'name': pid, 'display_name': pid} for pid in members]
+        with self.store.db() as db:
+            history = [
+                dict(r) for r in db.execute(
+                    'SELECT id,sequence,author,body FROM messages WHERE conversation=? '
+                    'ORDER BY sequence DESC LIMIT ?',
+                    (message['conversation'], turn_taking.MAX_VIEW_MESSAGES),
+                )
+            ]
+            history.reverse()
+            wakes = db.execute(
+                'SELECT count(*) FROM dispatches WHERE origin_message=?',
+                (message['id'],),
+            ).fetchone()[0]
+        remaining = max(0, config['max_wakes_per_origin'] - wakes)
+        decision = await turn_taking.select_speaker(
+            self._selector_llm(),
+            members=roster,
+            member_ids=member_ids,
+            default_responder=default,
+            messages=history,
+            unanswered_human=True,
+            remaining_wakes=remaining,
+        )
+        self.store.save_turn_decision(
+            message['id'],
+            input_seq=input_seq,
+            policy_version=decision.policy_version,
+            model=decision.model,
+            action=decision.action,
+            speaker=decision.speaker,
+            reason=decision.reason,
+            shadow=(mode == 'shadow'),
+        )
+        return decision, mode
+
+    async def resolve_pending_empty_to(self, config, busy_conversations: set):
+        """Enqueue speakers for empty-To group messages before admit.
+
+        Empty To persists with no dispatch. The selector chooses one member or
+        yield; only failure / off / shadow wakes the default responder.
+        Mutates busy_conversations for conversations already running; does not
+        mark newly enqueued conversations so the admit loop can take them.
+        """
+        handled = set(busy_conversations)
+        for message in self.store.pending_empty_to_messages():
+            cid = message['conversation']
+            if cid in handled:
+                continue
+            with self.store.db() as db:
+                busy = db.execute(
+                    """SELECT 1 FROM dispatches WHERE conversation=? AND
+                       (state='running' OR (state='cancelled' AND binding_key IS NOT NULL AND runtime_ack=0))""",
+                    (cid,),
+                ).fetchone()
+                latest_user = db.execute(
+                    "SELECT coalesce(max(sequence),0) FROM messages WHERE conversation=? AND author='user'",
+                    (cid,),
+                ).fetchone()[0]
+            if busy:
+                handled.add(cid)
+                continue
+            if latest_user > message['sequence']:
+                # Newer human message owns the conversation; record yield and move on.
+                self.store.save_turn_decision(
+                    message['id'],
+                    input_seq=message['sequence'],
+                    policy_version=turn_taking.POLICY_VERSION,
+                    model='',
+                    action='yield',
+                    speaker=None,
+                    reason='nothing_new',
+                    shadow=False,
+                )
+                continue
+            decision, mode = await self._decide_empty_to(message, config)
+            if mode == 'shadow':
+                self.store.enqueue_origin_dispatch(message['id'], message['responder'])
+                handled.add(cid)
+                continue
+            if decision.action == 'yield':
+                handled.add(cid)
+                continue
+            if decision.action == 'select' and decision.speaker:
+                self.store.enqueue_origin_dispatch(message['id'], decision.speaker)
+                handled.add(cid)
+                continue
+            self.store.enqueue_origin_dispatch(message['id'], message['responder'])
+            handled.add(cid)
+
     async def apply_turn_taking(self, d, config):
         """Classify an ambiguous group wake before session admission.
 
-        Returns an updated dispatch dict, or None when the turn was yielded
-        (no further admit). Shadow mode always returns the original profile.
+        Empty-To selection normally happens in resolve_pending_empty_to. This
+        path still handles cached decisions, shadow, and any legacy queued wakes.
+        Returns an updated dispatch dict, or None when the turn was yielded.
         """
         mode = config.get('turn_taking_mode', 'on')
         if mode == 'off':
@@ -302,6 +434,8 @@ class MessagingService:
             active = [dict(r) for r in db.execute("SELECT d.*,c.owner FROM dispatches d JOIN conversations c ON c.id=d.conversation WHERE d.state='running' OR (d.state='cancelled' AND d.binding_key IS NOT NULL AND d.runtime_ack=0)")]
         for d in active:
             await self.settle(d, config)
+        running = {d['conversation'] for d in active}
+        await self.resolve_pending_empty_to(config, running)
         with self.store.db() as db:
             queued = [dict(r) for r in db.execute("""SELECT d.*,c.owner,c.title FROM dispatches d
                 JOIN conversations c ON c.id=d.conversation WHERE d.state='queued'

@@ -143,3 +143,19 @@ def test_select_speaker_missing_llm_falls_back():
         )
     )
     assert decision.action == 'yield'
+
+
+def test_select_speaker_missing_llm_unanswered_wakes_default():
+    decision = asyncio.run(
+        turn_taking.select_speaker(
+            None,
+            members=[{'id': 'swe-id'}],
+            member_ids={'swe-id'},
+            default_responder='swe-id',
+            messages=[],
+            unanswered_human=True,
+            remaining_wakes=1,
+        )
+    )
+    assert decision.action == 'select'
+    assert decision.speaker == 'swe-id'

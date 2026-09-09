@@ -54,8 +54,8 @@ plugin enablement while running and cancels active team work on revocation.
 4. Restart Hermes. The new services acquire exclusive ownership, refuse takeover
    while legacy execution holds a lease, and reconcile durable state. Legacy
    text-only wakes without a trustworthy matching envelope are retained for
-   inspection, not guessed into a task session. Messaging schema v3 prevents old
-   workers from claiming newly managed dispatches.
+   inspection, not guessed into a task session. The backend executor fence
+   prevents old workers from claiming newly managed dispatches.
 5. Verify a two-message DM reuses its session; verify a team assignment can be
    claimed, reported, reviewed, and accepted through the existing tools. Close
    the client during a turn and verify backend completion. Confirm the old
@@ -87,9 +87,11 @@ admit-time aux call (see below).
 
 ## Turn-taking prediction
 
-Before admitting an ambiguous group wake (user message with empty recipients,
-so only the default responder was queued), the messaging backend may ask a
-Hermes plugin auxiliary model which member should speak — or whether to yield.
+For a group user message with empty recipients (no explicit To:), the messaging
+backend persists the message without queuing a dispatch, then asks a Hermes
+plugin auxiliary model which member should speak — or whether to yield. The
+default responder is woken only when that call fails, mode is `off`, or shadow
+evaluation needs a fixed admit path.
 
 Registration lives on the `bot-coms` tools plugin (`ctx.register_auxiliary_task`
 for `bot_coms_turn_taking`). Messaging calls `ctx.llm.acomplete_structured`
@@ -110,15 +112,15 @@ Messaging `plugin-data/bot-coms-messaging/config.json` mode:
 
 | `turn_taking_mode` | Behavior |
 | --- | --- |
-| `off` | Never call the selector (legacy admit path). |
-| `shadow` | Call and persist the decision; still admit the original dispatch. |
-| `on` (default) | Apply select / retarget / yield before session submit. |
+| `off` | Skip the selector; enqueue the default responder. |
+| `shadow` | Call and persist the decision; still enqueue the default responder. |
+| `on` (default) | Enqueue the selected member, or nobody on yield. |
 
 DMs, explicit recipients, and `@mention` hops skip the selector. Team-board
 assignment / review / acceptance never consults it. Unknown speaker ids and
-timeouts fall back to the default responder when a human request is unanswered,
-otherwise yield. Decisions are stored in SQLite `turn_decisions` and reused for
-the same message sequence so a tick replay does not re-ask the model.
+timeouts fall back to the default responder for unanswered human requests.
+Decisions are stored in SQLite `turn_decisions` and reused for the same message
+sequence so a tick replay does not re-ask the model.
 
 
 ## Current integration boundaries

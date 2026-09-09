@@ -368,9 +368,12 @@ def test_on_mode_yield_skips_submit(root):
         tick(backend)
         assert selector.calls
         assert backend.runtime.calls == []
-        runs = backend.store.history('test:alice', group['id'])['runs']
-        assert runs[0]['status'] == 'completed'
-        assert runs[0]['detail'] == 'yielded'
+        with backend.store.db() as db:
+            assert db.execute('SELECT count(*) FROM dispatches').fetchone()[0] == 0
+            row = db.execute('SELECT action,speaker FROM turn_decisions').fetchone()
+            assert row['action'] == 'yield'
+            assert row['speaker'] is None
+        assert backend.store.history('test:alice', group['id'])['runs'] == []
     finally:
         backend.release()
 
@@ -382,6 +385,8 @@ def test_on_mode_retargets_to_selected_member(root):
     try:
         group = backend.store.groups('test:alice', 'Group', ['swe-id', 'designer-id'], 'swe-id', 'g')
         backend.store.send('test:alice', 'first', 'design question', [], cid=group['id'])
+        with backend.store.db() as db:
+            assert db.execute('SELECT count(*) FROM dispatches').fetchone()[0] == 0
         tick(backend)
         assert len(backend.runtime.calls) == 1
         assert backend.runtime.calls[0]['profile'] == 'designer'
@@ -402,6 +407,46 @@ def test_explicit_recipients_skip_selector(root):
         assert selector.calls == []
         assert len(backend.runtime.calls) == 1
         assert backend.runtime.calls[0]['profile'] == 'designer'
+    finally:
+        backend.release()
+
+
+def test_selector_failure_wakes_default(root):
+    set_mode(root, 'on')
+
+    class BoomSelector:
+        calls = []
+
+        async def acomplete_structured(self, **kwargs):
+            self.calls.append(kwargs)
+            raise TimeoutError('aux timeout')
+
+    selector = BoomSelector()
+    backend = service(root, selector=selector)
+    try:
+        group = backend.store.groups('test:alice', 'Group', ['swe-id', 'designer-id'], 'swe-id', 'g')
+        backend.store.send('test:alice', 'first', 'hello everyone', [], cid=group['id'])
+        tick(backend)
+        assert selector.calls
+        assert len(backend.runtime.calls) == 1
+        assert backend.runtime.calls[0]['profile'] == 'swe'
+        with backend.store.db() as db:
+            assert db.execute('SELECT profile FROM dispatches').fetchone()[0] == 'swe-id'
+    finally:
+        backend.release()
+
+
+def test_off_mode_wakes_default_without_selector(root):
+    set_mode(root, 'off')
+    selector = StubSelector({'action': 'yield', 'reason': 'nothing_new'})
+    backend = service(root, selector=selector)
+    try:
+        group = backend.store.groups('test:alice', 'Group', ['swe-id', 'designer-id'], 'swe-id', 'g')
+        backend.store.send('test:alice', 'first', 'hello everyone', [], cid=group['id'])
+        tick(backend)
+        assert selector.calls == []
+        assert len(backend.runtime.calls) == 1
+        assert backend.runtime.calls[0]['profile'] == 'swe'
     finally:
         backend.release()
 
@@ -433,8 +478,48 @@ def test_cached_decision_avoids_second_model_call(root):
         backend.release()
 
 
-def test_schema_v4_turn_decisions_table(root):
+def test_fresh_store_has_turn_decisions_table(root):
     store = Store(root)
     with store.db() as db:
-        assert db.execute('PRAGMA user_version').fetchone()[0] == 4
         db.execute('SELECT message,input_seq,action,speaker,reason,shadow FROM turn_decisions LIMIT 0')
+
+
+def test_delete_group_endpoint(root):
+    runtime = Runtime()
+    app = FastAPI()
+
+    @app.middleware('http')
+    async def auth(request, next):
+        request.state.session = SimpleNamespace(provider='test', user_id='alice', org_id=None)
+        return await next(request)
+
+    app.include_router(create_router(lambda: root, runtime_factory=lambda: runtime))
+    with TestClient(app) as client:
+        params = {'expected_server': 'test-server', 'expected_principal': 'test:alice'}
+        created = client.post(
+            '/v1/conversations',
+            params=params,
+            json={
+                'title': 'Room',
+                'profiles': ['swe-id', 'designer-id'],
+                'default_responder': 'swe-id',
+                'client_request_id': 'del-api',
+            },
+        )
+        assert created.status_code == 200
+        cid = created.json()['id']
+        assert client.post(
+            f'/v1/conversations/{cid}/messages',
+            params=params,
+            json={'client_message_id': 'm1', 'body': 'hello', 'recipients': []},
+        ).status_code == 200
+        deleted = client.delete(f'/v1/conversations/{cid}', params=params)
+        assert deleted.status_code == 200
+        assert deleted.json() == {'ok': True}
+        assert client.get(f'/v1/conversations/{cid}', params=params).status_code == 404
+        dm = client.post(
+            '/v1/dms/swe-id/messages',
+            params=params,
+            json={'client_message_id': 'dm1', 'body': 'hi', 'recipients': []},
+        ).json()['conversation']['id']
+        assert client.delete(f'/v1/conversations/{dm}', params=params).status_code == 422

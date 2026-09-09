@@ -51,3 +51,17 @@ def test_plugin_runtime_reuses_the_cli_session_id(tmp_path, monkeypatch):
     settle(runtime, 'account:alice', 'two')
     assert '--resume' in calls[1]
     assert calls[1][calls[1].index('--resume') + 1] == 'session-1'
+
+
+def test_forget_conversation_drops_bindings_and_operations(tmp_path, monkeypatch):
+    monkeypatch.setattr('bot_coms_runtime.cli_sessions.subprocess.Popen', lambda argv, **kwargs: Process(argv, **kwargs))
+    runtime = CliSessionRuntime(tmp_path, 'bot-coms-messaging')
+    monkeypatch.setattr(runtime, '_hermes', lambda: '/fake/hermes')
+    runtime.submit(principal_id='account:alice', profile='default', conversation_key='dm:1',
+                   operation_key='one', text='first')
+    settle(runtime, 'account:alice', 'one')
+    runtime.forget_conversation(principal_id='account:alice', conversation_keys=['dm:1'])
+    assert runtime.ensure_session(
+        principal_id='account:alice', profile='default', conversation_key='dm:1'
+    )['session_id'] is None
+    assert runtime.status(principal_id='account:alice', operation_key='one') is None

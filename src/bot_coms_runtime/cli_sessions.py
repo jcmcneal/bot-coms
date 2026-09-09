@@ -194,6 +194,25 @@ class CliSessionRuntime:
     def reconcile(self):
         return None
 
+    def forget_conversation(self, *, principal_id, conversation_keys):
+        """Drop plugin session bindings and operations for deleted conversations."""
+        self._require(principal_id, "principal_id")
+        if not isinstance(conversation_keys, (list, tuple)):
+            raise ValueError("conversation_keys must be a list")
+        keys = [self._require(key, "conversation_key") for key in conversation_keys]
+        if not keys:
+            return
+        with self._lock, self._db() as db:
+            for key in keys:
+                db.execute(
+                    "DELETE FROM operations WHERE principal=? AND conversation=?",
+                    (principal_id, key),
+                )
+                db.execute(
+                    "DELETE FROM bindings WHERE principal=? AND conversation=?",
+                    (principal_id, key),
+                )
+
     def close(self, cancel=False):
         if cancel:
             for principal, operation in list(self._processes):

@@ -1,7 +1,7 @@
 """Parse @mentions from bot reply bodies for hop-capped handoffs.
 
 User message bodies are never routed through this module — empty recipients
-still wake only the conversation default responder.
+defer to turn-taking (or the default responder only if that call fails).
 """
 from __future__ import annotations
 

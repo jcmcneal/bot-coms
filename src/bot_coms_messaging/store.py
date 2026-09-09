@@ -20,7 +20,7 @@ def new_id() -> str:
     return str(uuid.uuid4())
 
 
-_SCHEMA_V2 = '''
+_SCHEMA = '''
                 CREATE TABLE IF NOT EXISTS conversations (
                     id TEXT PRIMARY KEY, owner TEXT NOT NULL, kind TEXT NOT NULL,
                     dm_profile TEXT, title TEXT NOT NULL, profiles TEXT NOT NULL,
@@ -34,6 +34,12 @@ _SCHEMA_V2 = '''
                     sequence INTEGER NOT NULL, author TEXT NOT NULL, body TEXT NOT NULL,
                     created REAL NOT NULL, client_id TEXT, recipients TEXT,
                     UNIQUE(conversation, sequence), UNIQUE(conversation, client_id));
+                CREATE TABLE IF NOT EXISTS session_bindings (
+                    binding_key TEXT PRIMARY KEY, server_id TEXT NOT NULL,
+                    owner TEXT NOT NULL, conversation TEXT NOT NULL REFERENCES conversations(id),
+                    profile TEXT NOT NULL, profile_name TEXT NOT NULL, session_id TEXT,
+                    blocked INTEGER NOT NULL DEFAULT 0,
+                    UNIQUE(server_id,owner,conversation,profile));
                 CREATE TABLE IF NOT EXISTS dispatches (
                     id TEXT PRIMARY KEY, conversation TEXT NOT NULL REFERENCES conversations(id),
                     message TEXT NOT NULL REFERENCES messages(id), profile TEXT NOT NULL,
@@ -42,14 +48,35 @@ _SCHEMA_V2 = '''
                     parent_dispatch TEXT REFERENCES dispatches(id),
                     hop INTEGER NOT NULL DEFAULT 0,
                     origin_message TEXT REFERENCES messages(id),
+                    binding_key TEXT REFERENCES session_bindings(binding_key),
+                    admitted_at REAL,
+                    runtime_ack INTEGER NOT NULL DEFAULT 0,
                     UNIQUE(message, profile));
                 CREATE TABLE IF NOT EXISTS events (
                     sequence INTEGER PRIMARY KEY AUTOINCREMENT, owner TEXT NOT NULL,
                     conversation TEXT NOT NULL, kind TEXT NOT NULL, created REAL NOT NULL);
                 CREATE TABLE IF NOT EXISTS meta (key TEXT PRIMARY KEY, value TEXT NOT NULL);
+                CREATE TABLE IF NOT EXISTS session_messages (
+                    binding_key TEXT NOT NULL REFERENCES session_bindings(binding_key),
+                    message TEXT NOT NULL REFERENCES messages(id), PRIMARY KEY(binding_key,message));
+                CREATE TABLE IF NOT EXISTS dispatch_context (
+                    dispatch TEXT NOT NULL REFERENCES dispatches(id), message TEXT NOT NULL REFERENCES messages(id),
+                    PRIMARY KEY(dispatch,message));
+                CREATE TABLE IF NOT EXISTS turn_decisions (
+                    message TEXT PRIMARY KEY REFERENCES messages(id),
+                    input_seq INTEGER NOT NULL,
+                    policy_version TEXT NOT NULL,
+                    model TEXT NOT NULL DEFAULT '',
+                    action TEXT NOT NULL,
+                    speaker TEXT,
+                    reason TEXT NOT NULL,
+                    shadow INTEGER NOT NULL DEFAULT 0,
+                    created REAL NOT NULL);
                 CREATE INDEX IF NOT EXISTS messages_history ON messages(conversation, sequence);
                 CREATE INDEX IF NOT EXISTS dispatch_state ON dispatches(state, created);
-                PRAGMA user_version = 2;
+                CREATE TRIGGER IF NOT EXISTS backend_executor_fence BEFORE UPDATE OF state ON dispatches
+                WHEN NEW.state='running' AND (SELECT value FROM meta WHERE key='executor_mode')='backend'
+                BEGIN SELECT CASE WHEN messaging_backend_connection()!=1 THEN RAISE(ABORT,'Backend executor required') END; END;
 '''
 
 
@@ -60,55 +87,7 @@ class Store:
         self.root.mkdir(parents=True, exist_ok=True, mode=0o700)
         self.path = self.root / 'messages.sqlite'
         with self.db() as db:
-            version = db.execute('PRAGMA user_version').fetchone()[0]
-            if version > 4:
-                raise RuntimeError('Messaging database requires a newer adapter')
-            if version == 0:
-                db.executescript(_SCHEMA_V2)
-            elif version == 1:
-                db.executescript('''
-                    ALTER TABLE dispatches ADD COLUMN parent_dispatch TEXT REFERENCES dispatches(id);
-                    ALTER TABLE dispatches ADD COLUMN hop INTEGER NOT NULL DEFAULT 0;
-                    ALTER TABLE dispatches ADD COLUMN origin_message TEXT REFERENCES messages(id);
-                    UPDATE dispatches SET origin_message = message WHERE origin_message IS NULL;
-                    PRAGMA user_version = 2;
-                ''')
-            if version < 3:
-                db.executescript("""
-                    CREATE TABLE IF NOT EXISTS session_bindings (
-                        binding_key TEXT PRIMARY KEY, server_id TEXT NOT NULL,
-                        owner TEXT NOT NULL, conversation TEXT NOT NULL REFERENCES conversations(id),
-                        profile TEXT NOT NULL, profile_name TEXT NOT NULL, session_id TEXT,
-                        blocked INTEGER NOT NULL DEFAULT 0,
-                        UNIQUE(server_id,owner,conversation,profile));
-                    CREATE TABLE IF NOT EXISTS session_messages (
-                        binding_key TEXT NOT NULL REFERENCES session_bindings(binding_key),
-                        message TEXT NOT NULL REFERENCES messages(id), PRIMARY KEY(binding_key,message));
-                    CREATE TABLE IF NOT EXISTS dispatch_context (
-                        dispatch TEXT NOT NULL REFERENCES dispatches(id), message TEXT NOT NULL REFERENCES messages(id),
-                        PRIMARY KEY(dispatch,message));
-                    ALTER TABLE dispatches ADD COLUMN binding_key TEXT REFERENCES session_bindings(binding_key);
-                    ALTER TABLE dispatches ADD COLUMN admitted_at REAL;
-                    ALTER TABLE dispatches ADD COLUMN runtime_ack INTEGER NOT NULL DEFAULT 0;
-                    CREATE TRIGGER backend_executor_fence BEFORE UPDATE OF state ON dispatches
-                    WHEN NEW.state='running' AND (SELECT value FROM meta WHERE key='executor_mode')='backend'
-                    BEGIN SELECT CASE WHEN messaging_backend_connection()!=1 THEN RAISE(ABORT,'Backend executor required') END; END;
-                    PRAGMA user_version = 3;
-                """)
-            if version < 4:
-                db.executescript("""
-                    CREATE TABLE IF NOT EXISTS turn_decisions (
-                        message TEXT PRIMARY KEY REFERENCES messages(id),
-                        input_seq INTEGER NOT NULL,
-                        policy_version TEXT NOT NULL,
-                        model TEXT NOT NULL DEFAULT '',
-                        action TEXT NOT NULL,
-                        speaker TEXT,
-                        reason TEXT NOT NULL,
-                        shadow INTEGER NOT NULL DEFAULT 0,
-                        created REAL NOT NULL);
-                    PRAGMA user_version = 4;
-                """)
+            db.executescript(_SCHEMA)
         self.path.chmod(0o600)
 
     @contextmanager
@@ -197,8 +176,13 @@ class Store:
                 raise Problem(409, 'Reopen this conversation before sending')
             if revision is not None and revision != row['revision']:
                 raise Problem(409, 'Membership changed; refresh before sending')
-            targets = sorted(set(recipients)) or [row['responder']]
-            if not set(targets).issubset(json.loads(row['profiles'])):
+            # Group empty To: persist only; turn-taking enqueues a speaker later.
+            # DMs and explicit recipients still queue origin dispatches here.
+            if dm or recipients:
+                targets = sorted(set(recipients)) or [row['responder']]
+            else:
+                targets = []
+            if targets and not set(targets).issubset(json.loads(row['profiles'])):
                 raise Problem(403, 'A recipient is not a conversation member')
             mid = self._append(db, row, 'user', body, client_id, json.dumps(sorted(set(recipients))))
             for profile in targets:
@@ -281,6 +265,51 @@ class Store:
             row = self._row(db, owner, cid)
             self._event(db, row, 'membership.changed')
             return self._summary(db, row)
+
+    def delete_group(self, owner, cid):
+        """Permanently remove a group and its messaging state. DMs are not deletable."""
+        with self.db() as db:
+            row = self._row(db, owner, cid)
+            if row['kind'] != 'group':
+                raise Problem(422, 'Only groups can be deleted')
+            db.execute(
+                "UPDATE dispatches SET state='cancelled',detail='Group deleted' "
+                "WHERE conversation=? AND state IN ('queued','running')",
+                (cid,),
+            )
+            binding_keys = [
+                r['binding_key']
+                for r in db.execute(
+                    'SELECT binding_key FROM session_bindings WHERE conversation=?', (cid,)
+                )
+            ]
+            dispatch_ids = [
+                r['id']
+                for r in db.execute('SELECT id FROM dispatches WHERE conversation=?', (cid,))
+            ]
+            message_ids = [
+                r['id']
+                for r in db.execute('SELECT id FROM messages WHERE conversation=?', (cid,))
+            ]
+            if dispatch_ids:
+                placeholders = ','.join('?' * len(dispatch_ids))
+                db.execute(f'DELETE FROM dispatch_context WHERE dispatch IN ({placeholders})', dispatch_ids)
+            if binding_keys:
+                placeholders = ','.join('?' * len(binding_keys))
+                db.execute(f'DELETE FROM session_messages WHERE binding_key IN ({placeholders})', binding_keys)
+            if message_ids:
+                placeholders = ','.join('?' * len(message_ids))
+                db.execute(f'DELETE FROM turn_decisions WHERE message IN ({placeholders})', message_ids)
+            db.execute('DELETE FROM dispatches WHERE conversation=?', (cid,))
+            db.execute('DELETE FROM messages WHERE conversation=?', (cid,))
+            db.execute('DELETE FROM session_bindings WHERE conversation=?', (cid,))
+            db.execute('DELETE FROM events WHERE conversation=?', (cid,))
+            db.execute('DELETE FROM conversations WHERE id=? AND owner=?', (cid, owner))
+            db.execute(
+                'INSERT INTO events(owner, conversation, kind, created) VALUES(?,?,?,?)',
+                (owner, cid, 'conversation.deleted', time.time()),
+            )
+            return dict(ok=True, binding_keys=binding_keys)
 
     def run_action(self, owner, run, action):
         with self.db() as db:
@@ -420,6 +449,62 @@ class Store:
                     time.time(),
                 ),
             )
+
+    def pending_empty_to_messages(self):
+        """Group user messages with empty To: and no origin dispatch yet.
+
+        Skips messages that already have a non-shadow yield decision (nothing to
+        enqueue) or any dispatch row for that message.
+        """
+        with self.db() as db:
+            rows = db.execute(
+                """SELECT m.*, c.owner, c.title, c.responder, c.profiles AS member_profiles
+                   FROM messages m
+                   JOIN conversations c ON c.id=m.conversation
+                   WHERE c.kind='group' AND m.author='user'
+                     AND (m.recipients IS NULL OR m.recipients='[]')
+                     AND NOT EXISTS (SELECT 1 FROM dispatches d WHERE d.message=m.id)
+                     AND NOT EXISTS (
+                       SELECT 1 FROM turn_decisions t
+                       WHERE t.message=m.id AND t.input_seq=m.sequence
+                         AND t.action='yield' AND t.shadow=0
+                     )
+                   ORDER BY m.created, m.id"""
+            ).fetchall()
+            return [dict(r) for r in rows]
+
+    def enqueue_origin_dispatch(self, message_id: str, profile: str) -> str | None:
+        """Queue hop-0 dispatch for a user message. Idempotent per message+profile."""
+        with self.db() as db:
+            message = db.execute('SELECT * FROM messages WHERE id=?', (message_id,)).fetchone()
+            if message is None:
+                return None
+            conversation = db.execute(
+                'SELECT * FROM conversations WHERE id=?', (message['conversation'],)
+            ).fetchone()
+            if conversation is None:
+                return None
+            members = set(json.loads(conversation['profiles']))
+            if profile not in members:
+                return None
+            existing = db.execute(
+                'SELECT id FROM dispatches WHERE message=? AND profile=?',
+                (message_id, profile),
+            ).fetchone()
+            if existing is not None:
+                return existing['id']
+            any_dispatch = db.execute(
+                'SELECT id FROM dispatches WHERE message=?', (message_id,)
+            ).fetchone()
+            if any_dispatch is not None:
+                return None
+            dispatch_id = new_id()
+            db.execute(
+                'INSERT INTO dispatches(id,conversation,message,profile,created,parent_dispatch,hop,origin_message) '
+                'VALUES(?,?,?,?,?,?,?,?)',
+                (dispatch_id, conversation['id'], message_id, profile, time.time(), None, 0, message_id),
+            )
+            return dispatch_id
 
     def retarget_dispatch(self, dispatch_id: str, profile: str) -> bool:
         """Move a queued dispatch to another member. Fails if the target already has a row."""

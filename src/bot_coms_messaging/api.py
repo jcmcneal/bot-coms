@@ -38,6 +38,8 @@ class ReadState(BaseModel):
 
 
 def create_router(root_factory=default_root, runtime_factory=None):
+    service_holder = {'service': None}
+
     @asynccontextmanager
     async def lifespan(app):
         from .service import MessagingService, native_runtime
@@ -48,6 +50,7 @@ def create_router(root_factory=default_root, runtime_factory=None):
             runtime = runtime_factory() if runtime_factory is not None else native_runtime(root)
             service = MessagingService(root, runtime)
             await service.start()
+            service_holder['service'] = service
         except (Problem, ImportError, RuntimeError):
             # Missing configuration or an older host must fail closed without
             # taking unrelated dashboard functionality down.
@@ -56,9 +59,11 @@ def create_router(root_factory=default_root, runtime_factory=None):
                 with service.store.db() as db:
                     db.execute("DELETE FROM meta WHERE key='heartbeat'")
             service = None
+            service_holder['service'] = None
         try:
             yield
         finally:
+            service_holder['service'] = None
             if service is not None:
                 await service.stop()
 
@@ -190,6 +195,36 @@ def create_router(root_factory=default_root, runtime_factory=None):
     def update(cid: str, body: GroupUpdate, ctx=Depends(context)):
         authorize(ctx, cid); recipients(ctx, body.profiles)
         return invoke(ctx[0].update_group, ctx[2], cid, body.revision, body.title, body.profiles, body.default_responder)
+
+    @router.delete('/conversations/{cid}')
+    async def delete_group(cid: str, ctx=Depends(context)):
+        authorize(ctx, cid)
+        store, _config, owner, _profiles = ctx
+        service = service_holder['service']
+        with store.db() as db:
+            running = [
+                dict(r) for r in db.execute(
+                    "SELECT id FROM dispatches WHERE conversation=? AND state IN ('queued','running')",
+                    (cid,),
+                )
+            ]
+        if service is not None:
+            for row in running:
+                try:
+                    store.run_action(owner, row['id'], 'cancel')
+                    await service.call('cancel', principal_id=owner, operation_key=service.operation(row))
+                except Exception:
+                    pass
+        result = invoke(store.delete_group, owner, cid)
+        if service is not None and result.get('binding_keys'):
+            forget = getattr(service.runtime, 'forget_conversation', None)
+            if forget is not None:
+                await service.call(
+                    'forget_conversation',
+                    principal_id=owner,
+                    conversation_keys=result['binding_keys'],
+                )
+        return dict(ok=True)
 
     @router.post('/runs/{run}/{action}')
     def run_action(run: str, action: str, ctx=Depends(context)):
