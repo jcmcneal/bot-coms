@@ -3,8 +3,8 @@
 User message bodies are never routed through this module — empty recipients
 defer to turn-taking (or the default responder only if that call fails).
 
-Handoffs match exact profile ids only (`@<id>`). Name / display_name aliases
-are ignored so clients can show friendly labels without affecting routing.
+Handoffs match exact profile ids only (`@id` or `@{id}`). Name / display_name
+aliases are ignored so clients can show friendly labels without affecting routing.
 """
 from __future__ import annotations
 
@@ -12,7 +12,8 @@ import re
 
 _FENCE_RE = re.compile(r'```.*?```', re.DOTALL)
 _INLINE_RE = re.compile(r'`[^`]+`')
-_MENTION_RE = re.compile(r'@([A-Za-z0-9_.-]+)')
+# Accept @id and @{id} (models sometimes emit braces from prompt templates).
+_MENTION_RE = re.compile(r'@\{([A-Za-z0-9_.-]+)\}|@([A-Za-z0-9_.-]+)')
 
 
 def strip_code(body: str) -> str:
@@ -25,7 +26,9 @@ def mention_tokens(body: str) -> list[str]:
     seen: set[str] = set()
     out: list[str] = []
     for match in _MENTION_RE.finditer(strip_code(body)):
-        token = match.group(1)
+        token = match.group(1) or match.group(2)
+        if not token:
+            continue
         key = token.casefold()
         if key not in seen:
             seen.add(key)
@@ -37,7 +40,7 @@ def resolve_mentions(body: str, members: list[dict]) -> list[str]:
     """Map @tokens to member profile ids.
 
     Matches case-insensitively against profile `id` only. Name and display_name
-    are never routing aliases.
+    are never routing aliases. Tokens may appear as @id or @{id}.
     """
     by_id: dict[str, str] = {}
     for member in members:

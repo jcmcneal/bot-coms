@@ -366,6 +366,8 @@ def test_mention_parser_unit():
     ]
     assert resolve_mentions('Ping @Designer and @swe', members) == []
     assert resolve_mentions('Ping @designer-id and @SWE-ID', members) == ['designer-id', 'swe-id']
+    assert resolve_mentions('Ask @{designer-id} next', members) == ['designer-id']
+    assert resolve_mentions('Ask @{designer-id} and @swe-id', members) == ['designer-id', 'swe-id']
     assert resolve_mentions('no one', members) == []
 
 
