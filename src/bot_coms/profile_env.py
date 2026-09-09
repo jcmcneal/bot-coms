@@ -2,17 +2,18 @@
 
 from __future__ import annotations
 
-import os
 import json
 import re
 from pathlib import Path
+
+from bot_coms.session_context import get_env
 
 _DEFAULT_SOURCE_KEY = "BOT_COMS_DEFAULT_SOURCE"
 _NOTIFY_ARGV_KEY = "BOT_COMS_NOTIFY_ARGV"
 
 
 def hermes_team_root() -> Path:
-    raw = os.environ.get("BOT_COMS_TEAM_ROOT", "").strip()
+    raw = get_env("BOT_COMS_TEAM_ROOT", "").strip()
     if raw:
         return Path(raw).expanduser()
     return Path.home() / ".hermes" / "team"
@@ -23,7 +24,7 @@ def hermes_profiles_root() -> Path:
 
 
 def peers_yaml_path() -> Path:
-    raw = os.environ.get("BOT_COMS_PEERS_YAML", "").strip()
+    raw = get_env("BOT_COMS_PEERS_YAML", "").strip()
     if raw:
         return Path(raw).expanduser()
     return hermes_team_root() / "peers.yaml"
@@ -87,7 +88,7 @@ def _peer_profiles(peers_yaml: Path) -> dict[str, str]:
 
 def _routing_profiles() -> dict[str, str]:
     profiles = _peer_profiles(peers_yaml_path())
-    path = Path(os.environ.get('BOT_COMS_WORKFLOWS', '') or hermes_team_root() / 'workflows.json')
+    path = Path(get_env('BOT_COMS_WORKFLOWS', '') or hermes_team_root() / 'workflows.json')
     if path.exists():
         data = json.loads(path.read_text(encoding='utf-8'))
         for peer, info in data.get('peers', {}).items():
@@ -121,15 +122,15 @@ def profile_env_path(profile: str) -> Path:
 def dotenv_search_paths(*, peer_id: str | None = None) -> list[Path]:
     """Documented fallback files (env wins over all of these)."""
     paths: list[Path] = []
-    explicit = os.environ.get("BOT_COMS_DEFAULT_SOURCE_FILE", "").strip()
+    explicit = get_env("BOT_COMS_DEFAULT_SOURCE_FILE", "").strip()
     if explicit:
         paths.append(Path(explicit).expanduser())
     team_env = hermes_team_root() / ".env"
     paths.append(team_env)
-    pid = (peer_id or os.environ.get("BOT_COMS_PEER_ID", "")).strip()
+    pid = (peer_id or get_env("BOT_COMS_PEER_ID", "")).strip()
     profile = peer_profile(pid) if pid else ""
     if not profile:
-        profile = os.environ.get("BOT_COMS_PEER_PROFILE", "").strip()
+        profile = get_env("BOT_COMS_PEER_PROFILE", "").strip()
     if profile:
         paths.append(profile_env_path(profile))
     return paths
@@ -137,7 +138,7 @@ def dotenv_search_paths(*, peer_id: str | None = None) -> list[Path]:
 
 def resolve_env_var(key: str, *, peer_id: str | None = None) -> str:
     """Return ``key`` from the process env, else documented profile/team dotenv files."""
-    raw = os.environ.get(key, "").strip()
+    raw = get_env(key, "").strip()
     if raw:
         return raw
     for path in dotenv_search_paths(peer_id=peer_id):

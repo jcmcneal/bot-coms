@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 import time
+from contextlib import asynccontextmanager
 from fastapi import APIRouter, Depends, HTTPException, Query, Request
 from pydantic import BaseModel, Field, ConfigDict
 
@@ -36,8 +37,32 @@ class ReadState(BaseModel):
     sequence: int = Field(ge=0)
 
 
-def create_router(root_factory=default_root):
-    router = APIRouter(prefix='/v1')
+def create_router(root_factory=default_root, runtime_factory=None):
+    @asynccontextmanager
+    async def lifespan(app):
+        from .service import MessagingService, native_runtime
+        service = None
+        try:
+            root = root_factory()
+            load_config(root)
+            runtime = (runtime_factory or native_runtime)()
+            service = MessagingService(root, runtime)
+            await service.start()
+        except (Problem, ImportError, RuntimeError):
+            # Missing configuration or an older host must fail closed without
+            # taking unrelated dashboard functionality down.
+            if service is not None:
+                service.release()
+                with service.store.db() as db:
+                    db.execute("DELETE FROM meta WHERE key='heartbeat'")
+            service = None
+        try:
+            yield
+        finally:
+            if service is not None:
+                await service.stop()
+
+    router = APIRouter(prefix='/v1', lifespan=lifespan)
 
     def context(request: Request):
         # Never trust a client principal header. Older auth without verified identities fails closed.
@@ -95,8 +120,12 @@ def create_router(root_factory=default_root):
         store, config, owner, profiles = ctx
         with store.db() as db:
             heartbeat = db.execute("SELECT value FROM meta WHERE key='heartbeat'").fetchone()
-        active = heartbeat is not None and time.time() - float(heartbeat['value']) < 30
-        # Worker writes heartbeat only after loading bot-coms and initializing its spool.
+            mode = db.execute("SELECT value FROM meta WHERE key='executor_mode'").fetchone()
+            server = db.execute("SELECT value FROM meta WHERE key='executor_server_id'").fetchone()
+        active = (mode is not None and mode['value'] == 'backend' and server is not None
+                  and server['value'] == config['server_id'] and heartbeat is not None
+                  and time.time() - float(heartbeat['value']) < 30)
+        # Only the backend-owned service writes readiness after recovery and configuration checks.
         return dict(server_id=config['server_id'], principal_id=owner, api_version=1,
                     state='ready' if active and profiles else 'needs_configuration', features=['dm', 'groups', 'read_state'],
                     profiles=[dict(id=p['id'], name=p['name'], displayName=p.get('display_name', p['name'])) for p in profiles])

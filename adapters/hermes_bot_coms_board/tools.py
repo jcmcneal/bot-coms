@@ -3,10 +3,11 @@
 from __future__ import annotations
 
 import json
-import os
+
 from pathlib import Path
 from typing import Any
 
+from bot_coms.session_context import get_env
 from bot_coms.headers import resolve_assign_headers
 from bot_coms_board.coordinator import TeamCoordinator, default_spool_root
 from bot_coms_board.tool import TEAM_BUS_SCHEMA, handle_team_bus
@@ -83,7 +84,7 @@ def _resolve_assign_headers(a: dict[str, Any]) -> dict[str, str] | None:
 def team_assign(args: dict | None = None, **kwargs) -> str:
     a = _args(args, kwargs)
     with TeamCoordinator() as coord:
-        from_peer = os.environ.get("BOT_COMS_PEER_ID") or None
+        from_peer = get_env("BOT_COMS_PEER_ID") or None
         try:
             result = coord.assign(
                 slice_id=a["slice"],
@@ -129,6 +130,7 @@ TEAM_INBOX_SCHEMA = {
         "type": "object",
         "properties": {
             "limit": {"type": "integer"},
+            "message_id": {"type": "string", "description": "Only process this envelope; backend turns bind this automatically."},
             "spool_root": {"type": "string"},
         },
     },
@@ -137,7 +139,7 @@ TEAM_INBOX_SCHEMA = {
 
 def team_inbox(args: dict | None = None, **kwargs) -> str:
     a = _args(args, kwargs)
-    peer = os.environ.get("BOT_COMS_PEER_ID")
+    peer = get_env("BOT_COMS_PEER_ID")
     if not peer:
         return _json_result({"success": False, "error": "BOT_COMS_PEER_ID required"})
     spool_raw = a.get("spool_root")
@@ -147,6 +149,7 @@ def team_inbox(args: dict | None = None, **kwargs) -> str:
             peer,
             limit=int(a.get("limit") or 10),
             auto_handle=False,
+            message_id=get_env("BOT_COMS_MESSAGE_ID") or a.get("message_id"),
             auto_handle_intents=frozenset({"report_only", "report", "cancel"}),
         )
         return _json_result(
@@ -196,7 +199,7 @@ TEAM_REPORT_SCHEMA = {
 
 def team_report(args: dict | None = None, **kwargs) -> str:
     a = _args(args, kwargs)
-    peer = os.environ.get("BOT_COMS_PEER_ID")
+    peer = get_env("BOT_COMS_PEER_ID")
     if not peer:
         return _json_result({"success": False, "error": "BOT_COMS_PEER_ID required"})
     with TeamCoordinator() as coord:
@@ -235,7 +238,7 @@ def team_workflow(args: dict | None = None, **kwargs) -> str:
     a = dict(_args(args, kwargs))
     coord = TeamCoordinator()
     try:
-        actor = os.environ.get('BOT_COMS_PEER_ID', '').strip()
+        actor = get_env('BOT_COMS_PEER_ID', '').strip()
         if not actor:
             raise ValueError('BOT_COMS_PEER_ID required')
         action = a.pop('action')

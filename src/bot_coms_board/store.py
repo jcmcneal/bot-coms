@@ -4,6 +4,7 @@ from __future__ import annotations
 
 import json
 import os
+
 import sqlite3
 import threading
 from dataclasses import dataclass, field
@@ -11,6 +12,7 @@ from datetime import datetime, timezone
 from pathlib import Path
 from typing import Any
 
+from bot_coms.session_context import get_env
 from bot_coms_board.workflow_ledger import WorkflowLedger
 
 _SCHEMA_VERSION = 3
@@ -113,7 +115,7 @@ def default_team_root() -> Path:
 
 
 def team_root_from_env() -> Path:
-    raw = os.environ.get("BOT_COMS_TEAM_ROOT", "").strip()
+    raw = get_env("BOT_COMS_TEAM_ROOT", "").strip()
     if raw:
         return Path(raw).expanduser()
     return default_team_root()

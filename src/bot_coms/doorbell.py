@@ -5,16 +5,16 @@ Control plane is enqueue → doorbell, not pulse cron and not org-chart lookup.
 is envelope ``from`` (ack fold uses ``reply_to`` or ``from``).
 
 Origin surface is the return path: Discord-in → Discord-out via
-``hermes send --to``; spool peers still get ``hermes chat -Q``.
+``hermes send --to``; spool peers enqueue durable backend-owned session turns.
 """
 
 from __future__ import annotations
 
-import os
 import subprocess
 from pathlib import Path
 from typing import Any, Callable
 
+from bot_coms.session_context import get_env
 from bot_coms.headers import is_notifiable_source, normalize_source, source_from_headers, source_platform
 from bot_coms.profile_env import peer_profile
 from bot_coms.types import Envelope
@@ -53,7 +53,7 @@ def set_send_runner(runner: Callable[[str, str, Envelope], None] | None) -> None
 
 
 def doorbell_enabled() -> bool:
-    raw = os.environ.get("BOT_COMS_DOORBELL", "1").strip().lower()
+    raw = get_env("BOT_COMS_DOORBELL", "1").strip().lower()
     return raw not in {"0", "false", "no", "off"}
 
 
@@ -121,14 +121,14 @@ def peer_to_hermes_profile(peer_id: str) -> str:
 
 
 def team_root() -> Path:
-    raw = os.environ.get("BOT_COMS_TEAM_ROOT", "").strip()
+    raw = get_env("BOT_COMS_TEAM_ROOT", "").strip()
     if raw:
         return Path(raw).expanduser()
     return Path.home() / ".hermes" / "team"
 
 
 def spm_ping_script() -> Path:
-    raw = os.environ.get("BOT_COMS_SPM_PING", "").strip()
+    raw = get_env("BOT_COMS_SPM_PING", "").strip()
     if raw:
         return Path(raw).expanduser()
     return team_root() / "ping-spm.sh"
@@ -138,7 +138,7 @@ def adapter_ping_script(source: str) -> Path:
     """Return the operator ping script for an out-of-band source prefix."""
     platform = source_platform(source)
     if platform in {"csa", "grok-csa"}:
-        raw = os.environ.get("BOT_COMS_CSA_PING", "").strip()
+        raw = get_env("BOT_COMS_CSA_PING", "").strip()
         if raw:
             return Path(raw).expanduser()
         return team_root() / "ping-csa.sh"
@@ -146,7 +146,7 @@ def adapter_ping_script(source: str) -> Path:
 
 
 def hermes_bin() -> str:
-    return os.environ.get("HERMES_BIN", "").strip() or str(
+    return get_env("HERMES_BIN", "").strip() or str(
         Path.home() / ".local" / "bin" / "hermes"
     )
 
@@ -158,7 +158,7 @@ def _payload_summary(payload: dict[str, Any]) -> str | None:
 
 
 def build_wake_query(env: Envelope) -> str:
-    """Fresh-session wake text for ``hermes chat -Q --query-file`` (cf. pulse wake_assign)."""
+    """Incremental event text for an exact persistent Hermes session."""
     payload = env.payload if isinstance(env.payload, dict) else {}
     intent = str(payload.get("intent") or env.type or "mail").strip()
     slice_id = str(payload.get("slice") or env.correlation_id or "").strip()
@@ -210,19 +210,11 @@ def build_wake_query(env: Envelope) -> str:
     return "\n".join(parts) + "\n"
 
 
-def _default_wake(profile: str, peer_id: str, env: Envelope) -> None:
-    """Background ``hermes -p <profile> chat -Q --query-file``; never ``--continue`` / ``-c``."""
-    query = build_wake_query(env)
-    # Stable per-delivery pending work, serialized across all relay processes.
-    from bot_coms.atomic import atomic_write_bytes
-    directory = team_root() / 'wake-state' / peer_id
-    qf = directory / f'{env.id}.txt'
-    qf.parent.mkdir(parents=True, exist_ok=True)
-    if not qf.exists():
-        atomic_write_bytes(qf, query.encode('utf-8'))
-    hermes = hermes_bin()
-    from bot_coms.wake_worker import start
-    start(directory, profile, hermes)
+def _default_wake(profile: str, peer_id: str, env: Envelope, *, team: Path | None = None, spool_root: Path | None = None) -> None:
+    """Durably request a turn owned by the existing Hermes backend."""
+    from bot_coms.team_runtime import enqueue_wake
+    spool = spool_root or (Path(get_env("BOT_COMS_SPOOL_ROOT")) if get_env("BOT_COMS_SPOOL_ROOT") else None)
+    enqueue_wake(team or team_root(), profile=profile, env=env, spool_root=spool)
 
 
 def _adapter_message(env: Envelope) -> str:
@@ -296,8 +288,8 @@ def _default_gateway_send(profile: str, source: str, env: Envelope) -> None:
     raise RuntimeError(f"gateway notification failed: {last_err}")
 
 
-def ring(env: Envelope) -> None:
-    """Doorbell ``env.to``: messaging origin → gateway send; else Hermes chat -Q.
+def ring(env: Envelope, *, team: Path | None = None, spool_root: Path | None = None) -> None:
+    """Doorbell ``env.to``: messaging origin → gateway send; else durable session turn.
 
     Out-of-band ``headers.source`` (e.g. SPM webhook) ships terminal folds via
     the matching adapter — that is how *that* return address delivers, not a
@@ -328,7 +320,13 @@ def ring(env: Envelope) -> None:
     profile = peer_to_hermes_profile(peer_id)
     if not profile:
         return
-    (_wake_runner or _default_wake)(profile, peer_id, env)
+    if _wake_runner:
+        _wake_runner(profile, peer_id, env)
+    else:
+        if team is not None:
+            from bot_coms.team_runtime import _profile
+            profile = _profile(team, peer_id)
+        _default_wake(profile, peer_id, env, team=team, spool_root=spool_root)
 
 
 def after_enqueue(env: Envelope) -> None:

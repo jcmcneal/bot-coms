@@ -1,7 +1,7 @@
 ---
 name: messaging-setup
 description: "Install and enable persistent bot DMs/groups (bot-coms messaging) on a Hermes host."
-version: 0.2.1
+version: 0.3.0
 platforms: [macos, linux]
 tags: [hermes, bot-coms, messaging, setup]
 ---
@@ -32,7 +32,7 @@ bot-coms repository.
 5. Restart the dashboard/gateway only after the operator explicitly confirms it is
    safe to interrupt active work.
 6. Installing packages alone does not unlock messaging. Readiness needs enabled
-   plugins, valid `config.json`, a supervised worker heartbeat, and API v1.
+   plugins, valid `config.json`, a healthy backend-owned service, and API v1.
 
 ## Procedure
 
@@ -52,7 +52,9 @@ Or from GitHub:
 /path/to/hermes/python -m pip install "bot-coms[messaging] @ git+https://github.com/jcmcneal/bot-coms.git"
 ```
 
-Confirm `bot-coms-messaging` and `bot-coms-messaging-worker` are on `PATH`.
+Confirm `bot-coms-messaging` is on `PATH` and Hermes provides the backend plugin
+session service (`tui_gateway.plugin_sessions`). A missing service requires a
+compatible Hermes build; do not install a standalone worker as a fallback.
 
 ### 2. Install the dashboard plugin
 
@@ -77,7 +79,6 @@ permissions. Prefer auto-enroll (see
 [references/config.example.json](references/config.example.json)):
 
 - Generate a stable `server_id` once.
-- Set `hermes_executable` to the absolute Hermes CLI path.
 - Set `default_principals` to the operator principal from the client seed (or a
   verified identity — never invent one).
 - Set `auto_enroll_profiles: true` and leave `profiles` empty (or only list
@@ -86,18 +87,14 @@ permissions. Prefer auto-enroll (see
 Peers and profile ids are derived from Hermes profile names when auto-enroll is
 on, so crews with overlapping `BOT_COMS_PEER_ID` values do not collide.
 
-### 5. Supervise the worker
+### 5. Prepare backend-owned execution
 
-Do not attach worker lifetime to a phone or desktop client:
-
-```bash
-/path/to/hermes/python -m bot_coms_messaging.worker \
-  --root /absolute/shared-hermes-root/plugin-data/bot-coms-messaging
-```
-
-Use the host’s service manager (systemd, launchd, etc.) when available. The worker
-reloads config and creates spool peers for newly enrolled profiles without a
-full restart.
+Execution belongs to the existing Hermes backend. Do not install a messaging,
+wake, or reconciliation launchd/systemd sidecar. For an existing deployment,
+follow [the backend migration procedure](../../docs/BACKEND.md): drain or
+reconcile old execution, preserve SQLite and spool data, and retire the old
+service registration as part of cutover. Participant sessions are resumed by
+exact identity; never use a profile's globally latest session.
 
 ### 6. Restart when safe
 
@@ -106,24 +103,22 @@ After the operator confirms active work can be interrupted, restart the dashboar
 Then ask them to open Messaging in their client and tap **Check again**.
 
 Readiness requires authenticated access, eligible profiles, compatible API v1, and
-a recent worker heartbeat.
+a healthy backend-owned messaging service.
 
 ## Troubleshooting
 
 ### `Warning: Unknown toolsets: agent_screen, bot_coms, team_bus`
 
 These are valid **Hermes plugin toolsets**, not bot-coms configuration names or
-misspellings. Some Hermes builds validate a fresh CLI process's requested
-`--toolsets` before discovering enabled plugins. Because the persistent worker
-launches a fresh Hermes CLI process for each bot run, that startup-order bug can
-surface during an otherwise valid messaging dispatch.
+misspellings. This warning can occur on a legacy CLI execution path. The
+backend-owned messaging path does not launch fresh CLI processes for replies.
 
 Do **not** remove those toolsets, move them into `plugins.enabled`, or disable a
 working plugin to silence the warning. Confirm the relevant plugins are enabled
 and that `hermes tools list` recognizes their plugin toolsets. Then update Hermes
 to a build that discovers enabled plugins before validating explicit toolsets.
-After the fix, a fresh CLI process must accept the names without the warning;
-the worker's next dispatch will use that fresh process.
+Check whether an old worker registration is still active and complete the
+documented backend cutover instead of recreating that legacy execution path.
 
 ## Optional: load this skill permanently
 

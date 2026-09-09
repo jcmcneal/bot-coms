@@ -3,10 +3,11 @@
 from __future__ import annotations
 
 import json
-import os
+
 from pathlib import Path
 from typing import Any
 
+from bot_coms.session_context import get_env
 from bot_coms import Client
 from bot_coms.atomic import read_json
 from bot_coms.call import CallDeadLetter, CallTimeout, map_call_error
@@ -16,9 +17,15 @@ from bot_coms.types import ClaimedMessage, PermissionDenied
 
 
 def _client() -> Client:
-    root = os.environ.get("BOT_COMS_SPOOL_ROOT")
-    peer = os.environ.get("BOT_COMS_PEER_ID")
-    token = os.environ.get("BOT_COMS_TOKEN")
+    root = get_env("BOT_COMS_SPOOL_ROOT")
+    peer = get_env("BOT_COMS_PEER_ID")
+    token = get_env("BOT_COMS_TOKEN")
+    profile = get_env("BOT_COMS_PEER_PROFILE")
+    if profile:
+        from bot_coms.profile_env import read_dotenv_value
+        team = Path(get_env("BOT_COMS_TEAM_ROOT") or Path.home() / ".hermes/team")
+        home = team.parent if profile == "default" else team.parent / "profiles" / profile
+        token = read_dotenv_value(home / ".env", "BOT_COMS_TOKEN") or None
     if not root or not peer:
         raise RuntimeError("BOT_COMS_SPOOL_ROOT and BOT_COMS_PEER_ID are required")
     return Client(Path(root), peer, token=token)
@@ -83,7 +90,10 @@ def bot_coms_send(args: dict | None = None, **kwargs) -> str:
 
 def bot_coms_claim(args: dict | None = None, **kwargs) -> str:
     a = _args(args, kwargs)
-    claimed = _client().claim(msg_id=a.get("id"))
+    bound = get_env("BOT_COMS_MESSAGE_ID")
+    if bound and a.get("id") and a["id"] != bound:
+        raise ValueError("this session turn is bound to a different message")
+    claimed = _client().claim(msg_id=bound or a.get("id"))
     if claimed is None:
         return json.dumps({"claimed": False})
     return json.dumps({"claimed": True, "lease_token": claimed.lease_token, "envelope": claimed.envelope.to_dict()})
@@ -97,6 +107,9 @@ def bot_coms_reclaim(args: dict | None = None, **kwargs) -> str:
 
 
 def _claimed_or_processing(client: Client, msg_id: str, lease_token: str | None = None) -> ClaimedMessage:
+    bound = get_env("BOT_COMS_MESSAGE_ID")
+    if bound and bound != msg_id:
+        raise ValueError("this session turn is bound to a different message")
     claimed = None if lease_token else client.claim(msg_id=msg_id)
     if claimed is not None:
         return claimed

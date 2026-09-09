@@ -61,7 +61,7 @@ class Store:
         self.path = self.root / 'messages.sqlite'
         with self.db() as db:
             version = db.execute('PRAGMA user_version').fetchone()[0]
-            if version > 2:
+            if version > 3:
                 raise RuntimeError('Messaging database requires a newer adapter')
             if version == 0:
                 db.executescript(_SCHEMA_V2)
@@ -73,12 +73,35 @@ class Store:
                     UPDATE dispatches SET origin_message = message WHERE origin_message IS NULL;
                     PRAGMA user_version = 2;
                 ''')
+            if version < 3:
+                db.executescript("""
+                    CREATE TABLE IF NOT EXISTS session_bindings (
+                        binding_key TEXT PRIMARY KEY, server_id TEXT NOT NULL,
+                        owner TEXT NOT NULL, conversation TEXT NOT NULL REFERENCES conversations(id),
+                        profile TEXT NOT NULL, profile_name TEXT NOT NULL, session_id TEXT,
+                        blocked INTEGER NOT NULL DEFAULT 0,
+                        UNIQUE(server_id,owner,conversation,profile));
+                    CREATE TABLE IF NOT EXISTS session_messages (
+                        binding_key TEXT NOT NULL REFERENCES session_bindings(binding_key),
+                        message TEXT NOT NULL REFERENCES messages(id), PRIMARY KEY(binding_key,message));
+                    CREATE TABLE IF NOT EXISTS dispatch_context (
+                        dispatch TEXT NOT NULL REFERENCES dispatches(id), message TEXT NOT NULL REFERENCES messages(id),
+                        PRIMARY KEY(dispatch,message));
+                    ALTER TABLE dispatches ADD COLUMN binding_key TEXT REFERENCES session_bindings(binding_key);
+                    ALTER TABLE dispatches ADD COLUMN admitted_at REAL;
+                    ALTER TABLE dispatches ADD COLUMN runtime_ack INTEGER NOT NULL DEFAULT 0;
+                    CREATE TRIGGER backend_executor_fence BEFORE UPDATE OF state ON dispatches
+                    WHEN NEW.state='running' AND (SELECT value FROM meta WHERE key='executor_mode')='backend'
+                    BEGIN SELECT CASE WHEN messaging_backend_connection()!=1 THEN RAISE(ABORT,'Backend executor required') END; END;
+                    PRAGMA user_version = 3;
+                """)
         self.path.chmod(0o600)
 
     @contextmanager
     def db(self):
         db = sqlite3.connect(self.path, timeout=10)
         db.row_factory = sqlite3.Row
+        db.create_function("messaging_backend_connection", 0, lambda: 1)
         db.execute('PRAGMA foreign_keys=ON')
         db.execute('PRAGMA journal_mode=WAL')
         db.execute('BEGIN IMMEDIATE')
@@ -277,6 +300,12 @@ class Store:
                 bot_mid = self._append(db, row, d['profile'], body)
             db.execute('UPDATE dispatches SET state=?,detail=? WHERE id=?',
                        ('completed' if body else 'needs_attention', detail, dispatch))
+            if body and d['binding_key']:
+                # Persist exactly the supplied messages and native final reply together.
+                # Sequence alone cannot track replies interleaved with pending user sends.
+                db.execute('INSERT OR IGNORE INTO session_messages SELECT ?,message FROM dispatch_context WHERE dispatch=?',
+                           (d['binding_key'], dispatch))
+                db.execute('INSERT OR IGNORE INTO session_messages VALUES(?,?)', (d['binding_key'], bot_mid))
             self._event(db, row, 'run.updated')
             if bot_mid and body:
                 self._enqueue_bot_mentions(

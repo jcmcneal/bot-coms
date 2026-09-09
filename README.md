@@ -6,7 +6,12 @@ This project does **not** depend on the Hermes A2A gateway or any product reposi
 
 **Team coordination** lives in the sibling package `bot_coms_board` (same repo): `bus.sqlite` ledger, `team_assign` / `team_inbox` / `team_report` Hermes tools, and `bot-coms-board` CLI. See `docs/BOARD.md` and [`docs/WORKFLOWS.md`](docs/WORKFLOWS.md) for configurable responsibilities, frozen ownership, independent review gates and owner acceptance. The transport core never imports the board lane.
 
-**Persistent messaging** lives in the sibling package `bot_coms_messaging` (same wheel, optional `[messaging]` extra): authenticated DMs and multi-bot groups over a dedicated spool, exposed as a Hermes dashboard plugin with a supervised worker. It uses bot-coms as transport only and does **not** require `bot_coms_board`. See [`docs/INSTALL.md`](docs/INSTALL.md#persistent-messaging).
+**Persistent messaging** lives in the sibling package `bot_coms_messaging` (same wheel, optional `[messaging]` extra): authenticated DMs and multi-bot groups with SQLite dispatch and persistent Hermes sessions. Execution belongs to the existing Hermes backend and does **not** require `bot_coms_board`. See [`docs/INSTALL.md`](docs/INSTALL.md#persistent-messaging).
+
+**Hermes team delivery** uses the same backend session service. Install the backend
+dashboard with `bot-coms install-dashboard --hermes-root ...`; no launchd wake,
+messaging, or reconciliation sidecar is required. This needs the matching Hermes
+plugin session service implementation. See [backend setup and migration](docs/BACKEND.md).
 
 MVP requires a **local POSIX** disk (APFS/ext4). NFS and other shared filesystems are unsupported.
 
@@ -19,7 +24,8 @@ the current participants, assignments, messages, and operator-specific settings.
 bot-coms/                              reusable source and documentation
 ├── src/bot_coms/                      filesystem message transport
 ├── src/bot_coms_board/                workflow ledger, contracts, recovery
-├── src/bot_coms_messaging/            persistent DMs/groups over a dedicated spool
+├── src/bot_coms_messaging/            persistent DMs/groups over SQLite dispatch
+├── src/bot_coms_runtime/              Hermes backend lifecycle and installation
 ├── adapters/                          Hermes tool + dashboard plugin entry points
 ├── skills/team-ops/                   agent operating procedure
 ├── docs/team/                         shared policy and daily prune procedure
@@ -39,8 +45,8 @@ $HERMES_HOME/                          one live Hermes deployment
 │   └── workflow-reconcile*.log        scheduler output
 └── TEAM.md                            local constraints and escalation route
 
-<operator scheduler>/                  optional operator-owned scheduler
-└── <reconcile command>                may call reconcile every minute
+<existing Hermes backend>/             owns delivery and restart recovery
+└── bot-coms plugin lifespan           reconciles durable work; no separate daemon
 ```
 
 `workflows.json` names stable peer IDs and their capabilities. It is the directory
@@ -67,7 +73,7 @@ flowchart LR
     E -->|completion, pause, or failure| X
     X -->|ready next action| C
     X -->|root assignment only| O
-    L --> Q[reconcile every minute]
+    L --> Q[Backend reconciliation]
     Q -->|retry durable delivery or recover missed exit| S
 ```
 
@@ -81,7 +87,8 @@ root acceptance sends the concise outcome to the assignment's saved origin.
 |---|---|
 | `bot_coms` | Atomic filesystem-spool transport, peer allowlists, claim/ack lifecycle, idempotent worker support. |
 | `bot_coms_board` | Assignment ledger, frozen contracts, review/acceptance gates, durable outbox, and reconciliation. |
-| `bot_coms_messaging` | Persistent DMs/groups, dashboard API, dedicated spool, and messaging worker. Does not require board. |
+| `bot_coms_messaging` | Persistent DMs/groups, dashboard API, SQLite dispatch, and backend-owned session execution. Does not require board. |
+| `bot_coms_runtime` | Starts and stops team scheduling within the existing Hermes backend. |
 | Hermes adapters | Expose `team_assign`, `team_inbox`, `team_report`, `team_workflow`, and `team_bus` to a profile; dashboard plugin for persistent messaging. |
 | `workflows.json` | Maps stable peer IDs to profiles and capabilities; binds responsibilities to peers; defines policies for new assignments. |
 | Profile `config.yaml` and `.env` | Select installed plugins/tools and give each profile its runtime peer identity. |
@@ -126,11 +133,13 @@ root acceptance sends the concise outcome to the assignment's saved origin.
    Then add local TEAM and usage settings from
    [`examples/team/`](examples/team/).
 
-4. Each `team_inbox` check reclaims stale leases for that peer and reconciles
-   pending delivery and missed runner exits before reading messages. No scheduler
-   is required if recovery can wait for the next inbox check. Optionally run
-   `bot-coms-board reconcile` from an existing scheduler for recovery while the
-   team is idle. Recovery never starts coding-agent jobs or resumes historical work.
+4. Install the backend dashboard with `bot-coms install-dashboard --hermes-root
+   /absolute/shared-hermes-root` and enable `bot-coms` on that shared instance.
+   Follow [the cutover procedure](docs/BACKEND.md) for existing deployments.
+   The backend reconciles pending delivery and missed runner exits even while
+   clients are closed. `team_inbox` retains its reconciliation pass and scopes
+   its results to the current assignment during backend-driven work. Recovery
+   never invents new coding-agent jobs or replays uncertain native turns.
 
 5. Smoke-test a bounded `activity="coordinate"` assignment. Verify its frozen
    contract with `team_workflow describe`, submit a report, and accept it from

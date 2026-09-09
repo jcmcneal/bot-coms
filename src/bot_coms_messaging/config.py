@@ -1,7 +1,6 @@
 from __future__ import annotations
 
 import json
-import os
 import re
 import uuid
 from pathlib import Path
@@ -134,17 +133,24 @@ def load_config(root: Path) -> dict:
         try:
             instance = json.loads(raw)
         except ValueError:
-            import yaml
-            instance = yaml.safe_load(raw)
+            try:
+                import yaml
+                instance = yaml.safe_load(raw)
+            except Exception as error:
+                raise Problem(503, 'Cannot parse shared Hermes plugin enablement') from error
         plugins = instance.get('plugins', {})
+        enabled, disabled = plugins.get('enabled', []), plugins.get('disabled', [])
+        if not isinstance(enabled, list) or not isinstance(disabled, list) or any(
+                not isinstance(item, str) for item in enabled + disabled):
+            raise Problem(503, 'Hermes plugin enablement must use lists of plugin IDs')
         required = {'bot-coms', 'bot-coms-messaging'}
-        if not required.issubset((plugins.get('enabled') or [])) or required.intersection((plugins.get('disabled') or [])):
+        if not required.issubset(enabled) or required.intersection(disabled):
             raise Problem(503, 'Messaging plugins are disabled on this Hermes instance')
     except (OSError, ValueError, TypeError, AttributeError, ImportError):
         raise Problem(503, 'Cannot verify shared Hermes plugin enablement')
     try:
         config = json.loads((root / 'config.json').read_text())
-    except (FileNotFoundError, ValueError):
+    except (OSError, ValueError):
         raise Problem(503, 'Messaging configuration is missing or invalid')
     if not isinstance(config, dict) or not isinstance(config.get('server_id'), str) or not config.get('server_id'):
         raise Problem(503, 'Messaging needs stable server and profile identities')
@@ -169,11 +175,6 @@ def load_config(root: Path) -> dict:
         if type(value) is not int or not lower <= value <= upper:
             raise Problem(503, f'Invalid {field}')
         config[field] = value
-    if not isinstance(config.get('hermes_executable'), str):
-        raise Problem(503, 'Configure an absolute Hermes executable path')
-    executable = Path(config['hermes_executable'])
-    if not executable.is_absolute() or not executable.is_file() or not os.access(executable, os.X_OK):
-        raise Problem(503, 'Configure an absolute Hermes executable path')
     return config
 
 

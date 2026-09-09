@@ -3,11 +3,12 @@
 from __future__ import annotations
 
 import json
-import os
+
 import re
 from pathlib import Path
 from typing import Any, Optional
 
+from bot_coms.session_context import get_env
 from bot_coms_board.coordinator import default_spool_root
 from bot_coms_board.doc_write import write_doc
 from bot_coms_board.slice_status import merge_slice_view
@@ -201,7 +202,7 @@ def _action_status(args: dict, actor: str) -> str:
         return _err("invalid active_job", field="active_job")
     store = open_store()
     existing = store.get_slice(sid)
-    peer = os.environ.get('BOT_COMS_PEER_ID') or profile_to_peer(actor)
+    peer = get_env('BOT_COMS_PEER_ID') or profile_to_peer(actor)
     if existing and existing.contract and peer not in {existing.peer, existing.contract['owner_peer']}:
         store.close()
         return _err('only the assigned worker or accountable owner can change execution status')

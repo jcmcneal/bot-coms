@@ -1,6 +1,5 @@
 {
   "server_id": "generate-an-installation-uuid-once",
-  "hermes_executable": "/absolute/path/to/hermes",
   "max_turns": 12,
   "run_timeout_seconds": 600,
   "default_principals": ["provider:user-id"],

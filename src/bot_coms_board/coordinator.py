@@ -3,12 +3,14 @@
 from __future__ import annotations
 
 import os
+
 import json
 import hashlib
 from dataclasses import dataclass, field
 from pathlib import Path
 from typing import Any
 
+from bot_coms.session_context import get_env
 from bot_coms import Client
 from bot_coms.headers import SOURCE_HEADER
 from bot_coms.types import ClaimedMessage
@@ -27,7 +29,7 @@ from bot_coms_board.store import BusStore, open_store, profile_to_peer, team_roo
 
 
 def default_spool_root() -> Path:
-    raw = os.environ.get("BOT_COMS_SPOOL_ROOT", "").strip()
+    raw = get_env("BOT_COMS_SPOOL_ROOT", "").strip()
     if raw:
         return Path(raw).expanduser()
     return team_root_from_env() / "spool"
@@ -176,7 +178,7 @@ class TeamCoordinator:
 
         if to_profile is None:
             to_profile = peer_to_profile(to_peer)
-        sender = (from_peer or os.environ.get("BOT_COMS_PEER_ID") or "").strip()
+        sender = (from_peer or get_env("BOT_COMS_PEER_ID") or "").strip()
         if not sender and from_profile:
             sender = profile_to_peer(from_profile)
         if not sender:
@@ -296,8 +298,6 @@ class TeamCoordinator:
                 continue
             completed.append({'job': stale_job, 'slice': row.id, 'recovered': True, 'reason': reason})
         delivery = self.flush_deliveries()
-        from bot_coms.wake_worker import recover
-        recover(self.team_root)
         incomplete = []
         for row in self.store.list_slices(limit=10000):
             fields = incomplete_slice_view(row)
@@ -360,7 +360,7 @@ class TeamCoordinator:
                 ttl_s=300,
             )
             try:
-                ring(env)
+                ring(env, team=self.team_root, spool_root=self.spool_root)
             except Exception as exc:
                 errors.append({"peer": peer, "error": str(exc)})
                 continue
@@ -410,7 +410,6 @@ class TeamCoordinator:
         from bot_coms.atomic import read_json
         from bot_coms.envelope import envelope_from_dict
         delivered, errors = 0, []
-        woken = set()
         for item in self.store.pending_deliveries(ready_only=True):
             try:
                 paths = require_peer(self.spool_root, item['recipient'])
@@ -431,7 +430,7 @@ class TeamCoordinator:
                 env.id = item['message_id']
                 # Stable ID: replay never creates a second delivery or revives consumed work.
                 if headers.get('delivery') == 'external':
-                    ring(env)
+                    ring(env, team=self.team_root, spool_root=self.spool_root)
                     self.store.delivery_finished(env.id, final=True)
                     delivered += 1
                     continue
@@ -448,9 +447,7 @@ class TeamCoordinator:
                     env = envelope_from_dict(read_json(existing), max_payload_bytes=config.max_payload_bytes)
                 else:
                     enqueue_inbox(paths, env, config=config, clock=clock)
-                if env.to not in woken:
-                    ring(env)  # exceptions leave the delivery pending for reconcile
-                    woken.add(env.to)
+                ring(env, team=self.team_root, spool_root=self.spool_root)  # every assignment gets its own durable, scoped turn
                 self.store.delivery_finished(env.id)
                 delivered += 1
             except Exception as exc:
@@ -791,6 +788,7 @@ class TeamCoordinator:
         limit: int = 10,
         auto_handle: bool = True,
         auto_handle_intents: frozenset[str] | None = None,
+        message_id: str | None = None,
     ) -> InboxResult:
         client = Client(self.spool_root, peer)
         result = InboxResult(peer=peer)
@@ -803,7 +801,9 @@ class TeamCoordinator:
             except Exception as exc:
                 result.reconciliation = {'error': str(exc)}
             processed = 0
-            for envelope in client.receive(limit=limit):
+            for envelope in client.receive(limit=10000 if message_id else limit):
+                if message_id and envelope.id != message_id:
+                    continue
                 claimed = client.claim(msg_id=envelope.id)
                 if claimed is None:
                     continue
@@ -869,3 +869,11 @@ class TeamCoordinator:
     def slice_view(self, slice_id: str) -> dict[str, Any]:
         row = self.store.get_slice(slice_id)
         return merge_slice_view(row, slice_id=slice_id, spool_root=self.spool_root)
+
+
+def reconcile_team(team_root: Path, spool_root: Path | None = None) -> dict:
+    """Backend recovery callback, preserving the core/board import boundary."""
+    if not (team_root / 'bus.sqlite').exists() and not (team_root / 'workflows.json').exists():
+        return {}
+    with TeamCoordinator(team_root=team_root, spool_root=spool_root) as coordinator:
+        return coordinator.reconcile()

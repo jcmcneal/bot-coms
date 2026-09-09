@@ -1,0 +1,255 @@
+"""Durable messaging scheduler hosted by the existing Hermes dashboard backend.
+
+SQLite owns admission and publication; Hermes owns native sessions and turns.
+There is no CLI child, message spool, or independently supervised service.
+"""
+from __future__ import annotations
+
+import asyncio
+import fcntl
+import hashlib
+import json
+import time
+from pathlib import Path
+
+from .config import allowed, load_config
+from .store import Problem, Store
+
+
+def native_runtime():
+    from tui_gateway.plugin_sessions import get_session_service
+    return get_session_service(plugin_id='bot-coms-messaging')
+
+
+class MessagingService:
+    def __init__(self, root: Path, runtime):
+        self.root, self.runtime = Path(root), runtime
+        self.store = Store(root)
+        self._leases = []
+        self._task = None
+        self._stopping = asyncio.Event()
+
+    def acquire(self):
+        """Fence other backends and refuse cutover while a legacy CLI holds a lease."""
+        config = load_config(self.root)
+        locks = self.root / 'locks'
+        locks.mkdir(exist_ok=True, mode=0o700)
+        paths = {locks / 'backend', *locks.iterdir(), *(locks / p['peer'] for p in config['profiles'])}
+        try:
+            for path in sorted(paths):
+                if path.is_dir():
+                    continue
+                handle = path.open('a+b')
+                try:
+                    fcntl.flock(handle, fcntl.LOCK_EX | fcntl.LOCK_NB)
+                except BlockingIOError:
+                    handle.close()
+                    raise Problem(503, 'Another backend or legacy messaging execution is active')
+                self._leases.append(handle)
+            with self.store.db() as db:
+                server = db.execute("SELECT value FROM meta WHERE key='executor_server_id'").fetchone()
+                if server and server['value'] != config['server_id']:
+                    raise Problem(503, 'Messaging storage belongs to a different server identity')
+                db.execute("INSERT OR REPLACE INTO meta VALUES('executor_server_id',?)", (config['server_id'],))
+                db.execute("INSERT OR REPLACE INTO meta VALUES('executor_mode','backend')")
+                db.execute("DELETE FROM meta WHERE key='heartbeat'")
+        except BaseException:
+            self.release()
+            raise
+
+    def release(self):
+        for handle in self._leases:
+            handle.close()
+        self._leases.clear()
+
+    async def start(self):
+        self.acquire()
+        try:
+            # Reconcile durable running admissions before accepting new turns.
+            await self.tick()
+            self._task = asyncio.create_task(self.run(), name='bot-coms-messaging')
+        except BaseException:
+            self.release()
+            raise
+
+    async def stop(self):
+        self._stopping.set()
+        if self._task:
+            await self._task
+        # Hermes owns admitted turns and their recovery. Shutdown never launches
+        # or repeats them, and does not wait for a model to finish.
+        with self.store.db() as db:
+            db.execute("DELETE FROM meta WHERE key='heartbeat'")
+        self.release()
+
+    async def run(self):
+        while not self._stopping.is_set():
+            try:
+                await self.tick()
+            except Exception:
+                # No private runtime errors in public capabilities or transcripts.
+                with self.store.db() as db:
+                    db.execute("DELETE FROM meta WHERE key='heartbeat'")
+            try:
+                await asyncio.wait_for(self._stopping.wait(), timeout=.25)
+            except asyncio.TimeoutError:
+                pass
+
+    async def call(self, method, **kwargs):
+        return await asyncio.to_thread(getattr(self.runtime, method), **kwargs)
+
+    @staticmethod
+    def operation(d):
+        return 'messaging:' + d['id']
+
+    def authorized(self, config, d):
+        with self.store.db() as db:
+            row = db.execute('SELECT * FROM conversations WHERE id=?', (d['conversation'],)).fetchone()
+        active = {p['id'] for p in allowed(config, row['owner'])}
+        accessible = {p['id'] for p in config['profiles'] if row['owner'] in p['principals']}
+        # A removed/revoked member must not leak shared conversation history.
+        return (d['profile'] in active and d['profile'] in json.loads(row['profiles']) and
+                set(json.loads(row['profiles'])).issubset(accessible))
+
+    async def settle(self, d, config):
+        principal = d['owner']
+        timed_out = d.get('admitted_at') is not None and time.time() - d['admitted_at'] >= config['run_timeout_seconds']
+        if d['state'] == 'cancelled' or timed_out or not self.authorized(config, d):
+            self.store.run_action(principal, d['id'], 'cancel')
+            await self.call('cancel', principal_id=principal, operation_key=self.operation(d))
+            receipt = await self.call('status', principal_id=principal, operation_key=self.operation(d))
+            if receipt:
+                self.record_delivery(d, receipt)
+            # Cancellation is acknowledged only when the original native turn
+            # actually drains, not merely when its receipt becomes cancelled.
+            if not receipt or not receipt.get('active', receipt.get('status') == 'running'):
+                with self.store.db() as db:
+                    db.execute('UPDATE dispatches SET runtime_ack=1 WHERE id=?', (d['id'],))
+            return
+        receipt = await self.call('status', principal_id=principal, operation_key=self.operation(d))
+        if receipt:
+            self.record_delivery(d, receipt)
+        if receipt and receipt['status'] == 'running':
+            return
+        current = load_config(self.root)
+        if current['server_id'] != config['server_id'] or not self.authorized(current, d):
+            self.store.run_action(principal, d['id'], 'cancel')
+            await self.call('cancel', principal_id=principal, operation_key=self.operation(d))
+            return
+        result = receipt.get('result') if receipt else None
+        body = result.get('text') if isinstance(result, dict) else result
+        if receipt and receipt['status'] == 'completed' and isinstance(body, str) and 0 < len(body.encode('utf-8')) <= 1_000_000:
+            self.store.finish(d['id'], body=body, profiles=allowed(current, principal),
+                              max_mention_hops=current['max_mention_hops'],
+                              max_wakes_per_origin=current['max_wakes_per_origin'])
+        else:
+            self.store.finish(d['id'], detail='Execution needs reconciliation; inspect the original Hermes session before continuing')
+            if not receipt or receipt['status'] == 'indeterminate' or receipt.get('active', False):
+                with self.store.db() as db:
+                    db.execute('UPDATE session_bindings SET blocked=1 WHERE binding_key=?', (d['binding_key'],))
+
+    def record_delivery(self, d, receipt):
+        if receipt.get('not_admitted'):
+            return
+        with self.store.db() as db:
+            binding = db.execute('SELECT session_id FROM session_bindings WHERE binding_key=?', (d['binding_key'],)).fetchone()
+            if binding is None or binding['session_id'] != receipt.get('session_id'):
+                raise RuntimeError('Native runtime returned a different session identity')
+            db.execute('INSERT OR IGNORE INTO session_messages SELECT ?,message FROM dispatch_context WHERE dispatch=?',
+                       (d['binding_key'], d['id']))
+
+    async def tick(self):
+        try:
+            config = load_config(self.root)
+            with self.store.db() as db:
+                server = db.execute("SELECT value FROM meta WHERE key='executor_server_id'").fetchone()
+            if not server or server['value'] != config['server_id']:
+                raise Problem(503, 'Messaging storage belongs to a different server identity')
+        except Problem:
+            with self.store.db() as db:
+                active = [dict(r) for r in db.execute("SELECT d.*,c.owner FROM dispatches d JOIN conversations c ON c.id=d.conversation WHERE d.state='running'")]
+                db.execute("DELETE FROM meta WHERE key='heartbeat'")
+            for d in active:
+                self.store.run_action(d['owner'], d['id'], 'cancel')
+                await self.call('cancel', principal_id=d['owner'], operation_key=self.operation(d))
+            return
+        with self.store.db() as db:
+            active = [dict(r) for r in db.execute("SELECT d.*,c.owner FROM dispatches d JOIN conversations c ON c.id=d.conversation WHERE d.state='running' OR (d.state='cancelled' AND d.binding_key IS NOT NULL AND d.runtime_ack=0)")]
+        for d in active:
+            await self.settle(d, config)
+        with self.store.db() as db:
+            queued = [dict(r) for r in db.execute("""SELECT d.*,c.owner,c.title FROM dispatches d
+                JOIN conversations c ON c.id=d.conversation WHERE d.state='queued'
+                AND NOT EXISTS (SELECT 1 FROM dispatches busy WHERE busy.conversation=d.conversation AND (busy.state='running' OR (busy.state='cancelled' AND busy.binding_key IS NOT NULL AND busy.runtime_ack=0)))
+                ORDER BY d.created,d.id""")]
+        # One turn per conversation per tick. Unrelated conversations can execute
+        # concurrently in the native runtime without modifying profile globals.
+        admitted = set()
+        for d in queued:
+            if d['conversation'] in admitted:
+                continue
+            if not self.authorized(config, d):
+                self.store.run_action(d['owner'], d['id'], 'cancel')
+                continue
+            if await self.admit(d, config):
+                admitted.add(d['conversation'])
+        with self.store.db() as db:
+            db.execute("INSERT OR REPLACE INTO meta VALUES('heartbeat',?)", (str(time.time()),))
+
+    async def admit(self, d, config):
+        profile = next(p for p in config['profiles'] if p['id'] == d['profile'])
+        key = hashlib.sha256(json.dumps([config['server_id'], d['owner'], d['conversation'], d['profile']], separators=(',', ':')).encode()).hexdigest()
+        with self.store.db() as db:
+            db.execute('INSERT OR IGNORE INTO session_bindings(binding_key,server_id,owner,conversation,profile,profile_name) VALUES(?,?,?,?,?,?)',
+                       (key, config['server_id'], d['owner'], d['conversation'], d['profile'], profile['name']))
+            binding = db.execute('SELECT * FROM session_bindings WHERE binding_key=?', (key,)).fetchone()
+            if binding['blocked'] or binding['profile_name'] != profile['name']:
+                return False
+        session = await self.call('ensure_session', principal_id=d['owner'], profile=profile['name'], conversation_key=key, title=d['title'])
+        with self.store.db() as db:
+            if binding['session_id'] and binding['session_id'] != session['session_id']:
+                db.execute('UPDATE session_bindings SET blocked=1 WHERE binding_key=?', (key,))
+                return False
+            db.execute('UPDATE session_bindings SET session_id=? WHERE binding_key=?', (session['session_id'], key))
+            trigger = db.execute('SELECT sequence FROM messages WHERE id=?', (d['message'],)).fetchone()[0]
+            context = [dict(r) for r in db.execute("""SELECT m.id,m.sequence,m.author,m.body FROM messages m
+                WHERE m.conversation=? AND (m.sequence<=? OR m.author!='user')
+                AND NOT EXISTS (SELECT 1 FROM session_messages s WHERE s.binding_key=? AND s.message=m.id)
+                ORDER BY m.sequence""", (d['conversation'], trigger, key))]
+            changed = db.execute("UPDATE dispatches SET state='running',binding_key=?,admitted_at=? WHERE id=? AND state='queued'", (key, time.time(), d['id'])).rowcount
+            if not changed:
+                return False
+            db.executemany('INSERT OR IGNORE INTO dispatch_context VALUES(?,?)', [(d['id'], m['id']) for m in context])
+        # Persist admission BEFORE crossing into the native runtime. A crash in
+        # this window is ambiguous and must query its operation ledger, not replay.
+        try:
+            current = load_config(self.root)
+            with self.store.db() as db:
+                state = db.execute('SELECT state FROM dispatches WHERE id=?', (d['id'],)).fetchone()[0]
+            if state != 'running' or current['server_id'] != config['server_id'] or not self.authorized(current, d):
+                self.store.run_action(d['owner'], d['id'], 'cancel')
+                return True
+            prompt = ('Respond to the latest addressed message in this persistent conversation. '
+                      'The following are new shared messages; author IDs distinguish users and bots. '
+                      'Return your user-facing answer. Mention a conversation member only for a useful handoff.\n\n'
+                      + json.dumps(context, ensure_ascii=False))
+            receipt = await self.call('submit', principal_id=d['owner'], profile=profile['name'], conversation_key=key,
+                            operation_key=self.operation(d), text=prompt, title=d['title'], max_turns=current['max_turns'])
+            self.record_delivery({**d, 'binding_key': key}, receipt)
+        except Exception as error:
+            # This native exception is guaranteed to precede journal admission.
+            # An absent operation receipt permits retrying a busy session; any
+            # unknown admission failure remains ambiguous and is never replayed.
+            try:
+                from tui_gateway.plugin_sessions import SessionServiceConflict
+            except ImportError:
+                SessionServiceConflict = ()
+            if isinstance(error, SessionServiceConflict):
+                receipt = await self.call('status', principal_id=d['owner'], operation_key=self.operation(d))
+                if receipt is None:
+                    with self.store.db() as db:
+                        db.execute("UPDATE dispatches SET state='queued',admitted_at=NULL WHERE id=? AND state='running'", (d['id'],))
+            # A lost admission response might already have started tools. The next
+            # tick consults status and never resubmits this operation.
+            pass
+        return True

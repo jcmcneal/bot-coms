@@ -119,15 +119,15 @@ acknowledged without launching work. Completed assignments are immutable.
 
 ## Recovery and operation
 
-Internal wakes save pending queries under `wake-state/<peer>` and launch a short
-supervisor. A POSIX file lock serializes Hermes sessions for that peer across
-processes. The Hermes child inherits the lock, so a supervisor crash cannot
-release the lease while the session is still running. New arrivals remain on disk
-and are drained after the current session. Failed sessions retain their queries;
-reconciliation restarts pending supervisors whose leases are free. Recovery of a
-dead job fences its active handle and commits state, event, and outbox together.
-This is at-least-once execution: a crash after a successful session but before
-removing its query can replay a wake, so agents must inspect current board state.
+Internal wakes save durable admissions in `team-runtime.sqlite3`. The existing
+Hermes backend discovers those admissions and resumes an exact assignment/peer
+session through the native plugin session service. It does not launch a wake
+supervisor or fresh CLI conversation. A backend lease prevents competing
+schedulers; operation keys prevent lost admission responses from starting the
+same turn twice. Uncertain native execution requires inspection before retry.
+Recovery of a dead coding-agent job still fences its active handle and commits
+state, event, and outbox together. See [backend migration](BACKEND.md) for legacy
+`wake-state` queries, active runs, and removal of old service registrations.
 
 Board events and outbound delivery records commit in the same SQLite transaction.
 The relay reuses a stable envelope ID after a crash, retries failed notifications,
@@ -139,8 +139,8 @@ so a reclaimed Worker delivery can republish its saved result.
 Each `team_inbox` / `bot-coms-board inbox` check reclaims the caller's stale leases
 and runs one reconciliation pass before reading messages. Recovery failures are
 returned in `reconciliation` without preventing otherwise available inbox work.
-No scheduler is needed while agents keep checking their inboxes; when all agents
-are idle, recovery waits for the next check. Retry backoff still applies.
+The backend also reconciles while agents are idle; there is no separate scheduler.
+Retry backoff still applies.
 
 Reconciliation recovers completed
 **contracted** jobs whose runner notification was missed, reclaims stale processing
@@ -149,8 +149,8 @@ recovered dead `RUNNING` job persists a report to the assignee, return peer, and
 accountable owner. Reconciliation does not doorbell peers merely because an unchanged
 slice is `open_incomplete`, create coding-agent jobs, restart old threads, or rewrite
 historical slice ownership.
-For recovery during idle periods, optionally run `bot-coms-board reconcile` from
-an existing scheduler using `scripts/workflow-reconcile.sh`.
+For manual diagnosis, `bot-coms-board reconcile` remains available. Normal idle
+recovery belongs to the backend, not a scheduled `workflow-reconcile.sh` sidecar.
 
 After the Hermes gateway has started, run `bot-coms-board wake` once (or invoke
 `scripts/workflow-wake.sh` from the gateway's post-start hook). This one-shot kick

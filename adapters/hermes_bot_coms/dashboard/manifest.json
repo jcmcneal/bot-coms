@@ -1,0 +1,9 @@
+{
+  "name": "bot-coms",
+  "label": "Bot communication",
+  "description": "Backend-owned team delivery and recovery",
+  "version": "0.2.0",
+  "tab": {"hidden": true},
+  "api": "plugin_api.py",
+  "entry": "index.js"
+}

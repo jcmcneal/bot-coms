@@ -209,6 +209,9 @@ def build_parser() -> argparse.ArgumentParser:
     p = argparse.ArgumentParser(prog="bot-coms")
     sub = p.add_subparsers(dest="cmd", required=True)
 
+    from bot_coms_runtime.install import register_command
+    register_command(sub)
+
     init = sub.add_parser("init-spool")
     init.add_argument("--root", default=None)
     init.add_argument("--peers", required=True)

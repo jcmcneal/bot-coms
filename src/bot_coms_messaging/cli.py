@@ -66,7 +66,7 @@ def cmd_install_dashboard(ns: argparse.Namespace) -> int:
     sys.stdout.write(
         "This package does not edit plugins.enabled. Enable bot-coms and "
         "bot-coms-messaging on the Hermes instance, write plugin-data config, "
-        "and supervise bot-coms-messaging-worker.\n"
+        "and restart the Hermes dashboard backend. Execution is backend-owned.\n"
     )
     return 0
 

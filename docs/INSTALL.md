@@ -58,7 +58,7 @@ Required at tool-call time: `BOT_COMS_SPOOL_ROOT`, `BOT_COMS_PEER_ID`. Optional:
 ## Persistent messaging
 
 Authenticated DMs and multi-bot groups use the sibling package `bot_coms_messaging`
-(same wheel). It depends on **bot-coms transport only** — do **not** enable
+(same wheel). Execution uses Hermes's backend plugin session service; do **not** enable
 `bot-coms-board` just to get messaging. This package still does not rewrite
 Hermes `plugins.enabled`.
 
@@ -98,7 +98,6 @@ an existing path.
 ```json
 {
   "server_id": "generate-an-installation-uuid-once",
-  "hermes_executable": "/absolute/path/to/hermes",
   "max_turns": 12,
   "run_timeout_seconds": 600,
   "default_principals": ["provider:user-id"],
@@ -118,20 +117,16 @@ Without auto-enroll, list every messaging profile explicitly (legacy). The
 reserved spool peer `inbox` represents the authenticated dashboard client; do
 not assign that peer name to a bot profile.
 
-3. Supervise the worker (do not attach its lifetime to a mobile or desktop client):
-
-```bash
-/path/to/hermes/python -m bot_coms_messaging.worker \
-  --root /absolute/shared-hermes-root/plugin-data/bot-coms-messaging
-```
-
-The worker reloads config periodically and creates spool peers for newly
-enrolled profiles without requiring a worker restart.
+3. Use a Hermes build with `tui_gateway.plugin_sessions` and its dashboard
+   lifecycle installation. The plugin starts its messaging scheduler inside
+   the existing backend. Each participant resumes an exact conversation session.
+   A build without the session service reports unavailable; it never falls back
+   to launching CLI workers. See [Backend execution and migration](BACKEND.md).
 
 4. Restart the dashboard when active work can safely be interrupted. Clients
    should re-check messaging readiness after setup. Readiness needs
-   authenticated access, eligible profiles, API v1, and a recent worker
-   heartbeat.
+   authenticated access, eligible profiles, API v1, and a healthy backend-owned
+   messaging service. No separate launchd/systemd worker is needed.
 
 API namespace: `/api/plugins/bot-coms-messaging/v1`.
 

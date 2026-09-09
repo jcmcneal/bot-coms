@@ -226,7 +226,6 @@ def job_done(
     result["peer"] = peer
     result["verdict"] = verdict
 
-    os.environ.setdefault("BOT_COMS_PEER_ID", peer)
     tr = team_root or team_root_from_env()
     sr = spool_root or default_spool_root()
     coord = TeamCoordinator(team_root=tr, spool_root=sr)

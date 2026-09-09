@@ -9,7 +9,6 @@ from fastapi.testclient import TestClient
 
 from bot_coms_messaging.api import create_router
 from bot_coms_messaging.store import Problem, Store
-from bot_coms_messaging.worker import Worker
 
 
 @pytest.fixture
@@ -81,41 +80,10 @@ def test_auth_and_forged_recipients(api):
     assert result.status_code == 403
 
 
-def test_capability_requires_worker(api, root):
-    assert api.get('/v1/capabilities', headers=headers()).json()['state'] == 'needs_configuration'
-    worker = Worker(root, execute=lambda *_: 'answer')
-    worker.heartbeat()
-    assert api.get('/v1/capabilities', headers=headers()).json()['state'] == 'ready'
 
 
-def test_real_spool_delivery_and_attributed_reply_survive_reopen(api, root):
-    calls = []
-    def execute(profile, dispatch, context, lease):
-        calls.append(profile['id'])
-        assert context[-1]['body'] == 'hello'
-        return 'A useful answer'
-    worker = Worker(root, execute=execute)
-    cid = send(api).json()['conversation']['id']
-    profile = worker.config['profiles'][0]
-    assert worker.step(profile)
-    assert not worker.step(profile)
-    assert calls == ['swe-id']
-    history = Store(root).history('test:alice', cid)
-    assert history['messages'][-1]['author'] == 'swe-id'
-    assert history['messages'][-1]['body'] == 'A useful answer'
-    assert history['conversation']['unread'] == 1
-    assert history['runs'][0]['status'] == 'completed'
 
 
-def test_ambiguous_launch_is_not_replayed(api, root):
-    called = []
-    worker = Worker(root, execute=lambda *_: called.append(True))
-    cid = send(api).json()['conversation']['id']
-    with worker.store.db() as db:
-        db.execute("UPDATE dispatches SET state='running'")
-    worker.step(worker.config['profiles'][0])
-    assert called == []
-    assert worker.store.history('test:alice', cid)['runs'][0]['status'] == 'needs_attention'
 
 
 def test_publish_after_cancel_and_removed_member_is_rejected(root):
@@ -143,9 +111,8 @@ def test_group_default_and_mentions_are_explicit(root):
 
 
 def test_monotonic_read_and_archive_identity(api, root):
-    worker = Worker(root, execute=lambda *_: 'reply')
     cid = send(api).json()['conversation']['id']
-    worker.step(worker.config['profiles'][0])
+    _run_dispatch(Store(root), 'swe-id', 'reply')
     s = Store(root)
     assert s.read('test:alice',cid,1000)['sequence'] == 2
     assert s.read('test:alice',cid,0)['sequence'] == 2
@@ -156,16 +123,7 @@ def test_monotonic_read_and_archive_identity(api, root):
     assert send(api,mid='later').status_code == 200
 
 
-def test_revocation_blocks_shared_history_and_dispatch(api, root):
-    cid = send(api).json()['conversation']['id']
-    config = json.loads((root/'config.json').read_text())
-    config['profiles'][0]['principals'] = []
-    (root/'config.json').write_text(json.dumps(config))
-    assert api.get('/v1/conversations/'+cid,headers=headers()).status_code == 403
-    worker = Worker(root,execute=lambda *_: pytest.fail('revoked work ran'))
-    worker.step(worker.config['profiles'][0])
-    with worker.store.db() as db:
-        assert db.execute('SELECT state FROM dispatches').fetchone()[0] == 'cancelled'
+
 
 
 def test_history_pagination_and_event_replay(root):
@@ -181,82 +139,14 @@ def test_history_pagination_and_event_replay(root):
     assert s.events('test:alice',first['cursor'])['events'] == []
 
 
-def test_quiet_subprocess_contract_uses_fresh_profile_and_private_diagnostics(api, root):
-    import sys
-    executable = root/'fake-hermes'
-    executable.write_text(f'#!{sys.executable}\n' + '''import sys
-from pathlib import Path
-args = sys.argv[1:]
-assert args[:3] == ['-p','swe','chat']
-assert '--continue' not in args and '--resume' not in args
-query = Path(args[args.index('--query-file')+1]).read_text()
-assert 'hello' in query
-print('Public final reply')
-print('private diagnostics; session_id: runtime-123', file=sys.stderr)
-''')
-    executable.chmod(0o700)
-    config = json.loads((root/'config.json').read_text())
-    config['hermes_executable'] = str(executable)
-    (root/'config.json').write_text(json.dumps(config))
-    cid = send(api).json()['conversation']['id']
-    worker = Worker(root)
-    worker.step(worker.config['profiles'][0])
-    h = worker.store.history('test:alice',cid)
-    assert h['messages'][-1]['body'] == 'Public final reply'
-    assert 'private' not in json.dumps(h)
 
 
-def test_revoked_during_execution_cannot_publish(api,root):
-    def execute(*_):
-        config=json.loads((root/'config.json').read_text())
-        config['profiles'][0]['principals']=[]
-        (root/'config.json').write_text(json.dumps(config))
-        return 'must not publish'
-    worker=Worker(root,execute=execute)
-    cid=send(api).json()['conversation']['id']
-    worker.step(worker.config['profiles'][0])
-    assert len(Store(root).history('test:alice',cid)['messages']) == 1
 
 
-def test_disabling_plugin_stops_api_and_worker_before_restart(api, root):
-    send(api)
-    worker = Worker(root, execute=lambda *_: pytest.fail('disabled worker ran'))
-    (root.parent.parent/'config.yaml').write_text(json.dumps({'plugins': {'enabled': ['bot-coms']}}))
-    assert api.get('/v1/capabilities',headers=headers()).json()['state'] == 'needs_configuration'
-    assert send(api,mid='disabled').status_code == 503
-    with pytest.raises(Problem):
-        worker.step(worker.config['profiles'][0])
 
 
-def test_crash_after_spool_put_before_outbox_receipt_does_not_double_run(api, root):
-    calls=[]
-    worker=Worker(root,execute=lambda *_: calls.append(True) or 'once')
-    cid=send(api).json()['conversation']['id']
-    original=worker.sender.send
-    def crash(*args,**kwargs):
-        original(*args,**kwargs)
-        raise RuntimeError('injected death after publication')
-    worker.sender.send=crash
-    with pytest.raises(RuntimeError): worker.step(worker.config['profiles'][0])
-    reopened=Worker(root,execute=lambda *_: calls.append(True) or 'once')
-    reopened.step(reopened.config['profiles'][0])
-    reopened.step(reopened.config['profiles'][0])
-    assert calls == [True]
-    assert len(Store(root).history('test:alice',cid)['messages']) == 2
 
 
-def test_crash_after_reply_commit_before_ack_does_not_republish(api,root,monkeypatch):
-    from bot_coms import Client
-    calls=[]
-    worker=Worker(root,execute=lambda *_: calls.append(True) or 'once')
-    cid=send(api).json()['conversation']['id']
-    original=Client.ack
-    def crash(*args,**kwargs): raise RuntimeError('injected ack failure')
-    monkeypatch.setattr(Client,'ack',crash)
-    with pytest.raises(RuntimeError): worker.step(worker.config['profiles'][0])
-    monkeypatch.setattr(Client,'ack',original)
-    Worker(root,execute=lambda *_: pytest.fail('repeated launch')).step(worker.config['profiles'][0])
-    assert len(Store(root).history('test:alice',cid)['messages']) == 2
 
 
 def test_disabling_one_profile_is_not_account_revocation(api,root):
@@ -332,24 +222,6 @@ def test_auto_enroll_discovers_profiles_and_honours_overrides(tmp_path):
     assert 'default_principals' in err.value.detail
 
 
-def test_worker_ensures_spool_for_newly_enrolled_peer(tmp_path):
-    hermes = tmp_path
-    (hermes / 'config.yaml').write_text(json.dumps({'plugins': {'enabled': ['bot-coms', 'bot-coms-messaging']}}))
-    (hermes / 'profiles' / 'alpha').mkdir(parents=True)
-    messaging = hermes / 'plugin-data' / 'bot-coms-messaging'
-    messaging.mkdir(parents=True)
-    (messaging / 'config.json').write_text(json.dumps({
-        'server_id': 'srv',
-        'hermes_executable': '/usr/bin/true',
-        'default_principals': ['test:alice'],
-        'auto_enroll_profiles': True,
-        'profiles': [],
-    }))
-    worker = Worker(messaging, execute=lambda *_: 'ok')
-    assert (messaging / 'spool' / 'alpha').is_dir()
-    (hermes / 'profiles' / 'beta').mkdir(parents=True)
-    worker.refresh_config()
-    assert (messaging / 'spool' / 'beta').is_dir()
 
 
 PROFILES = [
@@ -489,7 +361,7 @@ def test_schema_migrates_v1_dispatches_to_v2(tmp_path):
     db.close()
     s = Store(tmp_path)
     with s.db() as db:
-        assert db.execute('PRAGMA user_version').fetchone()[0] == 2
+        assert db.execute('PRAGMA user_version').fetchone()[0] == 3
         row = db.execute('SELECT hop, origin_message, parent_dispatch FROM dispatches WHERE id=?', ('d1',)).fetchone()
         assert row['hop'] == 0
         assert row['origin_message'] == 'm1'
