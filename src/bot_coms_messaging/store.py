@@ -7,6 +7,8 @@ import uuid
 from contextlib import contextmanager
 from pathlib import Path
 
+from .mentions import resolve_mentions
+
 
 class Problem(Exception):
     def __init__(self, status: int, detail: str):
@@ -18,17 +20,7 @@ def new_id() -> str:
     return str(uuid.uuid4())
 
 
-class Store:
-    """Short IMMEDIATE transactions serialize first-send, sequence, and outbox changes."""
-    def __init__(self, root: Path):
-        self.root = Path(root)
-        self.root.mkdir(parents=True, exist_ok=True, mode=0o700)
-        self.path = self.root / 'messages.sqlite'
-        with self.db() as db:
-            version = db.execute('PRAGMA user_version').fetchone()[0]
-            if version > 1:
-                raise RuntimeError('Messaging database requires a newer adapter')
-            db.executescript('''
+_SCHEMA_V2 = '''
                 CREATE TABLE IF NOT EXISTS conversations (
                     id TEXT PRIMARY KEY, owner TEXT NOT NULL, kind TEXT NOT NULL,
                     dm_profile TEXT, title TEXT NOT NULL, profiles TEXT NOT NULL,
@@ -47,6 +39,9 @@ class Store:
                     message TEXT NOT NULL REFERENCES messages(id), profile TEXT NOT NULL,
                     state TEXT NOT NULL DEFAULT 'queued', detail TEXT NOT NULL DEFAULT '',
                     envelope TEXT, created REAL NOT NULL,
+                    parent_dispatch TEXT REFERENCES dispatches(id),
+                    hop INTEGER NOT NULL DEFAULT 0,
+                    origin_message TEXT REFERENCES messages(id),
                     UNIQUE(message, profile));
                 CREATE TABLE IF NOT EXISTS events (
                     sequence INTEGER PRIMARY KEY AUTOINCREMENT, owner TEXT NOT NULL,
@@ -54,8 +49,30 @@ class Store:
                 CREATE TABLE IF NOT EXISTS meta (key TEXT PRIMARY KEY, value TEXT NOT NULL);
                 CREATE INDEX IF NOT EXISTS messages_history ON messages(conversation, sequence);
                 CREATE INDEX IF NOT EXISTS dispatch_state ON dispatches(state, created);
-                PRAGMA user_version = 1;
-            ''')
+                PRAGMA user_version = 2;
+'''
+
+
+class Store:
+    """Short IMMEDIATE transactions serialize first-send, sequence, and outbox changes."""
+    def __init__(self, root: Path):
+        self.root = Path(root)
+        self.root.mkdir(parents=True, exist_ok=True, mode=0o700)
+        self.path = self.root / 'messages.sqlite'
+        with self.db() as db:
+            version = db.execute('PRAGMA user_version').fetchone()[0]
+            if version > 2:
+                raise RuntimeError('Messaging database requires a newer adapter')
+            if version == 0:
+                db.executescript(_SCHEMA_V2)
+            elif version == 1:
+                db.executescript('''
+                    ALTER TABLE dispatches ADD COLUMN parent_dispatch TEXT REFERENCES dispatches(id);
+                    ALTER TABLE dispatches ADD COLUMN hop INTEGER NOT NULL DEFAULT 0;
+                    ALTER TABLE dispatches ADD COLUMN origin_message TEXT REFERENCES messages(id);
+                    UPDATE dispatches SET origin_message = message WHERE origin_message IS NULL;
+                    PRAGMA user_version = 2;
+                ''')
         self.path.chmod(0o600)
 
     @contextmanager
@@ -148,8 +165,10 @@ class Store:
                 raise Problem(403, 'A recipient is not a conversation member')
             mid = self._append(db, row, 'user', body, client_id, json.dumps(sorted(set(recipients))))
             for profile in targets:
-                db.execute('INSERT INTO dispatches(id,conversation,message,profile,created) VALUES(?,?,?,?,?)',
-                           (new_id(), cid, mid, profile, time.time()))
+                db.execute(
+                    'INSERT INTO dispatches(id,conversation,message,profile,created,parent_dispatch,hop,origin_message) '
+                    'VALUES(?,?,?,?,?,?,?,?)',
+                    (new_id(), cid, mid, profile, time.time(), None, 0, mid))
             return dict(conversation=self._summary(db, self._row(db, owner, cid)),
                         message=self._message(db.execute('SELECT * FROM messages WHERE id=?', (mid,)).fetchone()))
 
@@ -238,19 +257,78 @@ class Store:
                 raise Problem(409, 'Review the result and send a new instruction; this run may have performed actions')
             return dict(ok=True)
 
-    def finish(self, dispatch, body=None, detail=''):
+    def finish(self, dispatch, body=None, detail='', *, profiles=None,
+               max_mention_hops=2, max_wakes_per_origin=4):
+        """Complete a run. Bot bodies may enqueue hop-capped @ handoffs.
+
+        User-body @ routing is never applied here — only resolved mentions in
+        the bot reply against conversation members, subject to hop/budget caps.
+        """
         with self.db() as db:
             d = db.execute('SELECT * FROM dispatches WHERE id=?', (dispatch,)).fetchone()
             if d is None or d['state'] != 'running':
                 return False
             row = db.execute('SELECT * FROM conversations WHERE id=?', (d['conversation'],)).fetchone()
-            if d['profile'] not in json.loads(row['profiles']):
+            members = json.loads(row['profiles'])
+            if d['profile'] not in members:
                 return False
+            bot_mid = None
             if body:
-                self._append(db, row, d['profile'], body)
-            db.execute('UPDATE dispatches SET state=?,detail=? WHERE id=?', ('completed' if body else 'needs_attention', detail, dispatch))
+                bot_mid = self._append(db, row, d['profile'], body)
+            db.execute('UPDATE dispatches SET state=?,detail=? WHERE id=?',
+                       ('completed' if body else 'needs_attention', detail, dispatch))
             self._event(db, row, 'run.updated')
+            if bot_mid and body:
+                self._enqueue_bot_mentions(
+                    db, row, d, bot_mid, body, profiles or [],
+                    max_mention_hops=max_mention_hops,
+                    max_wakes_per_origin=max_wakes_per_origin,
+                )
             return True
+
+    def _chain_profiles(self, db, dispatch_id) -> set[str]:
+        seen: set[str] = set()
+        current = dispatch_id
+        while current:
+            row = db.execute('SELECT profile, parent_dispatch FROM dispatches WHERE id=?', (current,)).fetchone()
+            if row is None:
+                break
+            seen.add(row['profile'])
+            current = row['parent_dispatch']
+        return seen
+
+    def _enqueue_bot_mentions(self, db, conversation, parent, bot_mid, body, profiles,
+                              *, max_mention_hops, max_wakes_per_origin):
+        members = set(json.loads(conversation['profiles']))
+        roster = [p for p in profiles if isinstance(p, dict) and p.get('id') in members]
+        if not roster:
+            roster = [{'id': pid, 'name': pid, 'display_name': pid} for pid in members]
+        targets = resolve_mentions(body, roster)
+        parent_hop = int(parent['hop'] or 0)
+        if parent_hop >= max_mention_hops:
+            return
+        origin = parent['origin_message'] or parent['message']
+        wakes = db.execute(
+            'SELECT count(*) FROM dispatches WHERE origin_message=?', (origin,)
+        ).fetchone()[0]
+        chain = self._chain_profiles(db, parent['id'])
+        next_hop = parent_hop + 1
+        for profile in targets:
+            if profile == parent['profile'] or profile not in members or profile in chain:
+                continue
+            if wakes >= max_wakes_per_origin:
+                break
+            existing = db.execute(
+                'SELECT id FROM dispatches WHERE message=? AND profile=?', (bot_mid, profile)
+            ).fetchone()
+            if existing is not None:
+                continue
+            db.execute(
+                'INSERT INTO dispatches(id,conversation,message,profile,created,parent_dispatch,hop,origin_message) '
+                'VALUES(?,?,?,?,?,?,?,?)',
+                (new_id(), conversation['id'], bot_mid, profile, time.time(),
+                 parent['id'], next_hop, origin))
+            wakes += 1
 
     def events(self, owner, after):
         with self.db() as db:

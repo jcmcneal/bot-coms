@@ -159,10 +159,16 @@ def load_config(root: Path) -> dict:
     seen, peers = set(), set()
     for p in config['profiles']:
         _validate_profile_row(p, seen, peers)
-    for field, fallback, lower, upper in [('max_turns', 12, 1, 100), ('run_timeout_seconds', 600, 5, 3600)]:
+    for field, fallback, lower, upper in [
+        ('max_turns', 12, 1, 100),
+        ('run_timeout_seconds', 600, 5, 3600),
+        ('max_mention_hops', 2, 0, 8),
+        ('max_wakes_per_origin', 4, 1, 32),
+    ]:
         value = config.get(field, fallback)
         if type(value) is not int or not lower <= value <= upper:
             raise Problem(503, f'Invalid {field}')
+        config[field] = value
     if not isinstance(config.get('hermes_executable'), str):
         raise Problem(503, 'Configure an absolute Hermes executable path')
     executable = Path(config['hermes_executable'])

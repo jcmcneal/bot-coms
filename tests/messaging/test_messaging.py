@@ -350,3 +350,147 @@ def test_worker_ensures_spool_for_newly_enrolled_peer(tmp_path):
     (hermes / 'profiles' / 'beta').mkdir(parents=True)
     worker.refresh_config()
     assert (messaging / 'spool' / 'beta').is_dir()
+
+
+PROFILES = [
+    dict(id='swe-id', peer='swe', name='swe', display_name='SWE', enabled=True, principals=['test:alice']),
+    dict(id='designer-id', peer='designer', name='designer', display_name='Designer', enabled=True, principals=['test:alice']),
+]
+
+
+def _run_dispatch(store, profile_id, body, profiles=None, **kwargs):
+    with store.db() as db:
+        d = db.execute(
+            "SELECT id FROM dispatches WHERE profile=? AND state='queued' ORDER BY created LIMIT 1",
+            (profile_id,),
+        ).fetchone()
+        assert d is not None
+        db.execute("UPDATE dispatches SET state='running' WHERE id=?", (d['id'],))
+        dispatch_id = d['id']
+    assert store.finish(dispatch_id, body=body, profiles=profiles or PROFILES, **kwargs)
+
+
+def test_bot_output_at_enqueues_member_handoff(root):
+    s = Store(root)
+    g = s.groups('test:alice', 'Project', ['swe-id', 'designer-id'], 'swe-id', 'handoff')
+    s.send('test:alice', 'm1', 'please coordinate', [], cid=g['id'], revision=1)
+    _run_dispatch(s, 'swe-id', 'I need @Designer on the layout')
+    with s.db() as db:
+        rows = [dict(r) for r in db.execute(
+            'SELECT id, profile, hop, parent_dispatch FROM dispatches ORDER BY created')]
+    assert [r['profile'] for r in rows] == ['swe-id', 'designer-id']
+    assert rows[0]['hop'] == 0 and rows[0]['parent_dispatch'] is None
+    assert rows[1]['hop'] == 1 and rows[1]['parent_dispatch'] == rows[0]['id']
+
+
+def test_bot_mention_in_code_fence_does_not_route(root):
+    s = Store(root)
+    g = s.groups('test:alice', 'Project', ['swe-id', 'designer-id'], 'swe-id', 'fence')
+    s.send('test:alice', 'm1', 'look at this', [], cid=g['id'], revision=1)
+    _run_dispatch(s, 'swe-id', 'Example:\n```\n@designer in a fence\n```\nand ` @swe ` inline')
+    with s.db() as db:
+        assert [r[0] for r in db.execute('SELECT profile FROM dispatches')] == ['swe-id']
+
+
+def test_bot_mention_cycle_and_hop_budget(root):
+    s = Store(root)
+    g = s.groups('test:alice', 'Project', ['swe-id', 'designer-id'], 'swe-id', 'cycle')
+    s.send('test:alice', 'm1', 'start', [], cid=g['id'], revision=1)
+    _run_dispatch(s, 'swe-id', 'Handing to @designer')
+    _run_dispatch(s, 'designer-id', 'Back to you @swe')
+    with s.db() as db:
+        profiles = [r[0] for r in db.execute('SELECT profile FROM dispatches ORDER BY created')]
+    # A→B is allowed; B→A is dropped because swe is already on the chain.
+    assert profiles == ['swe-id', 'designer-id']
+
+
+def test_bot_mention_hop_cap_drops_third_hop(root):
+    s = Store(root)
+    profiles = PROFILES + [
+        dict(id='pm-id', peer='pm', name='pm', display_name='PM', enabled=True, principals=['test:alice']),
+    ]
+    # Expand group membership for a three-hop attempt.
+    with open(root / 'config.json', 'w') as fh:
+        json.dump(dict(server_id='test-server', hermes_executable='/usr/bin/true', profiles=profiles), fh)
+    g = s.groups('test:alice', 'Project', ['swe-id', 'designer-id', 'pm-id'], 'swe-id', 'hops')
+    s.send('test:alice', 'm1', 'start', [], cid=g['id'], revision=1)
+    _run_dispatch(s, 'swe-id', 'Ask @designer', profiles=profiles)
+    _run_dispatch(s, 'designer-id', 'Ask @pm', profiles=profiles)
+    # hop=2 reply trying to create hop=3 must be dropped (max_mention_hops=2).
+    _run_dispatch(s, 'pm-id', 'Ask @swe again', profiles=profiles)
+    with s.db() as db:
+        hops = [dict(r) for r in db.execute('SELECT profile, hop FROM dispatches ORDER BY created')]
+    assert [(r['profile'], r['hop']) for r in hops] == [
+        ('swe-id', 0), ('designer-id', 1), ('pm-id', 2),
+    ]
+
+
+def test_bot_mention_wake_budget_per_origin(root):
+    s = Store(root)
+    extras = [
+        dict(id=f'bot{i}-id', peer=f'bot{i}', name=f'bot{i}', display_name=f'Bot{i}',
+             enabled=True, principals=['test:alice'])
+        for i in range(5)
+    ]
+    members = ['swe-id'] + [p['id'] for p in extras]
+    profiles = PROFILES + extras
+    with open(root / 'config.json', 'w') as fh:
+        json.dump(dict(server_id='test-server', hermes_executable='/usr/bin/true', profiles=profiles), fh)
+    g = s.groups('test:alice', 'Room', members, 'swe-id', 'budget')
+    s.send('test:alice', 'm1', 'fan out', [], cid=g['id'], revision=1)
+    body = ' '.join(f'@{p["name"]}' for p in extras)
+    _run_dispatch(s, 'swe-id', body, profiles=profiles, max_wakes_per_origin=4)
+    with s.db() as db:
+        # Origin user dispatch + at most 3 follow-ups (budget 4 total).
+        assert db.execute('SELECT count(*) FROM dispatches').fetchone()[0] == 4
+
+
+def test_mention_parser_unit():
+    from bot_coms_messaging.mentions import resolve_mentions, strip_code
+    assert '@swe' not in strip_code('see `@swe` and ```\n@designer\n```')
+    members = [
+        {'id': 'swe-id', 'name': 'swe', 'display_name': 'SWE'},
+        {'id': 'designer-id', 'name': 'designer', 'display_name': 'Designer'},
+    ]
+    assert resolve_mentions('Ping @Designer and @swe-id', members) == ['designer-id', 'swe-id']
+    assert resolve_mentions('no one', members) == []
+
+
+def test_schema_migrates_v1_dispatches_to_v2(tmp_path):
+    import sqlite3
+    path = tmp_path / 'messages.sqlite'
+    db = sqlite3.connect(path)
+    db.executescript('''
+        CREATE TABLE conversations (
+            id TEXT PRIMARY KEY, owner TEXT NOT NULL, kind TEXT NOT NULL,
+            dm_profile TEXT, title TEXT NOT NULL, profiles TEXT NOT NULL,
+            responder TEXT NOT NULL, revision INTEGER NOT NULL DEFAULT 1,
+            updated REAL NOT NULL, archived INTEGER NOT NULL DEFAULT 0,
+            pinned INTEGER NOT NULL DEFAULT 0, muted INTEGER NOT NULL DEFAULT 0,
+            read_seq INTEGER NOT NULL DEFAULT 0, request_id TEXT);
+        CREATE TABLE messages (
+            id TEXT PRIMARY KEY, conversation TEXT NOT NULL,
+            sequence INTEGER NOT NULL, author TEXT NOT NULL, body TEXT NOT NULL,
+            created REAL NOT NULL, client_id TEXT, recipients TEXT);
+        CREATE TABLE dispatches (
+            id TEXT PRIMARY KEY, conversation TEXT NOT NULL,
+            message TEXT NOT NULL, profile TEXT NOT NULL,
+            state TEXT NOT NULL DEFAULT 'queued', detail TEXT NOT NULL DEFAULT '',
+            envelope TEXT, created REAL NOT NULL, UNIQUE(message, profile));
+        CREATE TABLE events (
+            sequence INTEGER PRIMARY KEY AUTOINCREMENT, owner TEXT NOT NULL,
+            conversation TEXT NOT NULL, kind TEXT NOT NULL, created REAL NOT NULL);
+        CREATE TABLE meta (key TEXT PRIMARY KEY, value TEXT NOT NULL);
+        INSERT INTO conversations VALUES('c1','test:alice','dm',NULL,'SWE','["swe-id"]','swe-id',1,1,0,0,0,0,NULL);
+        INSERT INTO messages VALUES('m1','c1',1,'user','hi',1,'cid',NULL);
+        INSERT INTO dispatches VALUES('d1','c1','m1','swe-id','queued','',NULL,1);
+        PRAGMA user_version = 1;
+    ''')
+    db.close()
+    s = Store(tmp_path)
+    with s.db() as db:
+        assert db.execute('PRAGMA user_version').fetchone()[0] == 2
+        row = db.execute('SELECT hop, origin_message, parent_dispatch FROM dispatches WHERE id=?', ('d1',)).fetchone()
+        assert row['hop'] == 0
+        assert row['origin_message'] == 'm1'
+        assert row['parent_dispatch'] is None

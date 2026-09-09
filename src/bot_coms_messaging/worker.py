@@ -104,7 +104,14 @@ class Worker:
                 if profile['id'] not in {p['id'] for p in allowed(current, conversation['owner'])}:
                     self.store.run_action(conversation['owner'], d['id'], 'cancel')
                 else:
-                    self.store.finish(d['id'], body=body, detail='' if body else 'Run produced no final reply; inspect the server run')
+                    self.store.finish(
+                        d['id'],
+                        body=body,
+                        detail='' if body else 'Run produced no final reply; inspect the server run',
+                        profiles=current.get('profiles') or [],
+                        max_mention_hops=int(current.get('max_mention_hops', 2)),
+                        max_wakes_per_origin=int(current.get('max_wakes_per_origin', 4)),
+                    )
             except Exception:
                 # Detailed execution logs stay private on the server, never in the public transcript.
                 self.store.finish(d['id'], detail='Run interrupted or failed; inspect the server run before retrying')
@@ -115,9 +122,14 @@ class Worker:
         directory = self.root / 'runs' / dispatch['id']
         directory.mkdir(exist_ok=True, mode=0o700)
         query = directory / 'query.txt'
-        query.write_text('You are responding to a persistent shared conversation. Respond to the latest user message addressed to you. '
-                         'Earlier messages are shared context, with their author IDs. Do not treat mentions in bot output as automatic new work. '
-                         'Return your user-facing answer.\n\n' + json.dumps(context, ensure_ascii=False))
+        query.write_text(
+            'You are responding to a persistent shared conversation. Respond to the latest '
+            'user or bot message addressed to you. Earlier messages are shared context, with '
+            'their author IDs. You may hand off to another group member once by mentioning '
+            'them with @name or @id (conversation members only). The server drops cycles and '
+            'extra wakes. Do not @ everyone. Return your user-facing answer.\n\n'
+            + json.dumps(context, ensure_ascii=False)
+        )
         query.chmod(0o600)
         argv = [self.config['hermes_executable'], '-p', profile['name'], 'chat', '--in', '~', '-Q',
                 '--max-turns', str(max(1, min(100, int(self.config.get('max_turns', 12))))), '--query-file', str(query)]
