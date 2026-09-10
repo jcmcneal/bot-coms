@@ -127,17 +127,11 @@ def _auto_enroll_profiles(config: dict, hermes_root: Path) -> list[dict]:
 def load_config(root: Path) -> dict:
     # Recheck the shared instance enablement on each request and worker pass. Dashboard
     # routers are mounted at startup, so disabling a plugin must also stop existing routes.
+    # Parse results are mtime-cached; disable/re-enable still busts when the file changes.
+    from bot_coms.hermes_config_cache import load_json, load_json_or_yaml
     hermes_root = root.parent.parent
     try:
-        raw = (hermes_root / 'config.yaml').read_text()
-        try:
-            instance = json.loads(raw)
-        except ValueError:
-            try:
-                import yaml
-                instance = yaml.safe_load(raw)
-            except Exception as error:
-                raise Problem(503, 'Cannot parse shared Hermes plugin enablement') from error
+        instance = load_json_or_yaml(hermes_root / 'config.yaml')
         plugins = instance.get('plugins', {})
         enabled, disabled = plugins.get('enabled', []), plugins.get('disabled', [])
         if not isinstance(enabled, list) or not isinstance(disabled, list) or any(
@@ -146,12 +140,14 @@ def load_config(root: Path) -> dict:
         required = {'bot-coms', 'bot-coms-messaging'}
         if not required.issubset(enabled) or required.intersection(disabled):
             raise Problem(503, 'Messaging plugins are disabled on this Hermes instance')
-    except (OSError, ValueError, TypeError, AttributeError, ImportError):
-        raise Problem(503, 'Cannot verify shared Hermes plugin enablement')
+    except Problem:
+        raise
+    except (OSError, ValueError, TypeError, AttributeError, ImportError) as error:
+        raise Problem(503, 'Cannot verify shared Hermes plugin enablement') from error
     try:
-        config = json.loads((root / 'config.json').read_text())
-    except (OSError, ValueError):
-        raise Problem(503, 'Messaging configuration is missing or invalid')
+        config = load_json(root / 'config.json')
+    except (OSError, ValueError) as error:
+        raise Problem(503, 'Messaging configuration is missing or invalid') from error
     if not isinstance(config, dict) or not isinstance(config.get('server_id'), str) or not config.get('server_id'):
         raise Problem(503, 'Messaging needs stable server and profile identities')
     if not isinstance(config.get('profiles'), list):

@@ -17,15 +17,8 @@ logger = logging.getLogger(__name__)
 def configured(root: Path) -> bool:
     """Check shared enablement on every pass, including after plugin disable."""
     try:
-        raw = (root / 'config.yaml').read_text()
-        try:
-            config = json.loads(raw)
-        except ValueError:
-            import yaml
-            try:
-                config = yaml.safe_load(raw)
-            except yaml.YAMLError:
-                return False
+        from bot_coms.hermes_config_cache import load_json_or_yaml
+        config = load_json_or_yaml(root / 'config.yaml')
         plugins = config.get('plugins', {})
         enabled, disabled = plugins.get('enabled', []), plugins.get('disabled', [])
         if not all(isinstance(values, list) and all(isinstance(item, str) for item in values)
@@ -36,6 +29,7 @@ def configured(root: Path) -> bool:
                      or (root / 'team' / 'spool').is_dir()))
     except (OSError, ValueError, TypeError, AttributeError, ImportError):
         return False
+
 
 
 def default_root() -> Path:

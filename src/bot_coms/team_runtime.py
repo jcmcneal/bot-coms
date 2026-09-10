@@ -77,15 +77,8 @@ def profile_authorized(team_root: Path, profile: str, *, board: bool) -> bool:
     root = team_root.parent
     home = root if profile == 'default' else root / 'profiles' / profile
     try:
-        raw = (home / 'config.yaml').read_text()
-        try:
-            config = json.loads(raw)
-        except ValueError:
-            import yaml
-            try:
-                config = yaml.safe_load(raw)
-            except yaml.YAMLError:
-                return False
+        from bot_coms.hermes_config_cache import load_json_or_yaml
+        config = load_json_or_yaml(home / 'config.yaml')
         plugins = config.get('plugins', {})
         enabled, disabled = plugins.get('enabled', []), plugins.get('disabled', [])
         if not all(isinstance(values, list) and all(isinstance(item, str) for item in values)
