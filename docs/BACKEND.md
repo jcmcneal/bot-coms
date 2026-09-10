@@ -37,9 +37,10 @@ Existing `team/workflows.json`, `team/spool`, and profile identities remain vali
 The backend starts delivery when the team spool or workflow configuration exists.
 Messaging remains optional and uses its own documented dashboard install command.
 
-The backend scans for durable work from external processes, including coding-agent
-EXIT callbacks. A missed notification therefore does not lose work. It checks
-plugin enablement while running and cancels active team work on revocation.
+The backend wakes on the shared ``doorbell`` path (``enqueue_wake`` →
+``dashboard_wake.poke``), including coding-agent EXIT callbacks from other
+processes via the team wake pipe. It checks plugin enablement on each wake and
+cancels active team work on revocation. There is no poll metronome.
 
 ## Cutover from standalone workers
 

@@ -127,9 +127,10 @@ def create_router(root_factory=default_root, runtime_factory=None):
             heartbeat = db.execute("SELECT value FROM meta WHERE key='heartbeat'").fetchone()
             mode = db.execute("SELECT value FROM meta WHERE key='executor_mode'").fetchone()
             server = db.execute("SELECT value FROM meta WHERE key='executor_server_id'").fetchone()
-        active = (mode is not None and mode['value'] == 'backend' and server is not None
-                  and server['value'] == config['server_id'] and heartbeat is not None
-                  and time.time() - float(heartbeat['value']) < 30)
+        service = service_holder['service']
+        active = (service is not None and mode is not None and mode['value'] == 'backend'
+                  and server is not None and server['value'] == config['server_id']
+                  and heartbeat is not None)
         # Only the backend-owned service writes readiness after recovery and configuration checks.
         return dict(server_id=config['server_id'], principal_id=owner, api_version=1,
                     state='ready' if active and profiles else 'needs_configuration', features=['dm', 'groups', 'read_state'],

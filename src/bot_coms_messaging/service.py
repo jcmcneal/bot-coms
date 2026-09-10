@@ -37,8 +37,7 @@ class MessagingService:
         self.store = Store(root)
         self.selector = selector
         self._leases = []
-        self._task = None
-        self._stopping = asyncio.Event()
+        self._registered = False
 
     def acquire(self):
         """Fence other backends and refuse cutover while a legacy CLI holds a lease."""
@@ -74,19 +73,39 @@ class MessagingService:
         self._leases.clear()
 
     async def start(self):
+        from bot_coms import dashboard_wake
+        from bot_coms_runtime.wake_host import host
+
         self.acquire()
         try:
+            loop = asyncio.get_running_loop()
+            dashboard_wake.bind(loop)
+            wake = host()
             # Reconcile durable running admissions before accepting new turns.
             await self.tick()
-            self._task = asyncio.create_task(self.run(), name='bot-coms-messaging')
+            if not self._registered:
+                wake.register(self._wake_tick)
+                self._registered = True
+            with self.store.db() as db:
+                db.execute("INSERT OR REPLACE INTO meta VALUES('heartbeat',?)", (str(time.time()),))
         except BaseException:
             self.release()
             raise
 
+    async def _wake_tick(self):
+        try:
+            await self.tick()
+        except Exception:
+            # No private runtime errors in public capabilities or transcripts.
+            with self.store.db() as db:
+                db.execute("DELETE FROM meta WHERE key='heartbeat'")
+
     async def stop(self):
-        self._stopping.set()
-        if self._task:
-            await self._task
+        from bot_coms_runtime.wake_host import host
+
+        if self._registered:
+            await host().unregister(self._wake_tick)
+            self._registered = False
         # The plugin owns admitted child processes. Shutdown fences/reconciles
         # them; it never repeats an uncertain operation.
         close = getattr(self.runtime, 'close', None)
@@ -95,19 +114,6 @@ class MessagingService:
         with self.store.db() as db:
             db.execute("DELETE FROM meta WHERE key='heartbeat'")
         self.release()
-
-    async def run(self):
-        while not self._stopping.is_set():
-            try:
-                await self.tick()
-            except Exception:
-                # No private runtime errors in public capabilities or transcripts.
-                with self.store.db() as db:
-                    db.execute("DELETE FROM meta WHERE key='heartbeat'")
-            try:
-                await asyncio.wait_for(self._stopping.wait(), timeout=.25)
-            except asyncio.TimeoutError:
-                pass
 
     async def call(self, method, **kwargs):
         return await asyncio.to_thread(getattr(self.runtime, method), **kwargs)

@@ -5,6 +5,7 @@ import json
 import pytest
 
 from bot_coms_runtime.backend import TeamBackend, create_router
+from bot_coms_runtime.wake_host import shutdown_host
 
 
 def configure(root, enabled=True):
@@ -29,19 +30,34 @@ class Runtime:
         self.cancelled = self.cancelled or cancel
 
 
-def test_team_runs_without_messaging_and_stops_on_disable(tmp_path):
+@pytest.fixture(autouse=True)
+def reset_wake_host():
+    from bot_coms.dashboard_wake import close
+
+    asyncio.run(shutdown_host())
+    close()
+    yield
+    asyncio.run(shutdown_host())
+    close()
+
+
+def test_team_runs_without_messaging_and_stops_on_disable(tmp_path, monkeypatch):
+    monkeypatch.setenv('BOT_COMS_DOORBELL', '1')
     configure(tmp_path)
     runtime = Runtime()
     backend = TeamBackend(tmp_path, factory=lambda _: runtime)
 
     async def exercise():
-        await backend.tick()
+        await backend.start()
         assert (runtime.starts, runtime.ticks) == (1, 1)
         configure(tmp_path, enabled=False)
-        await backend.tick()
+        from bot_coms.dashboard_wake import poke
+        poke()
+        await asyncio.sleep(0.05)
         assert runtime.closes == 1
         assert runtime.cancelled
         assert runtime.ticks == 1
+        await backend.stop()
     asyncio.run(exercise())
 
 
@@ -57,10 +73,6 @@ def test_router_lifespan_is_inert_until_backend_starts(tmp_path):
 
     @app.get('/probe')
     async def probe():
-        for _ in range(100):
-            if runtime.ticks:
-                break
-            await asyncio.sleep(.005)
         return {'ticks': runtime.ticks}
 
     assert runtime.starts == 0
@@ -74,13 +86,12 @@ def test_missing_backend_service_does_not_break_dashboard(tmp_path):
     configure(tmp_path)
     def unavailable(_):
         raise RuntimeError('Hermes session service unavailable')
-    backend = TeamBackend(tmp_path, factory=unavailable, interval=.005)
+    backend = TeamBackend(tmp_path, factory=unavailable)
+
     async def exercise():
-        backend.start()
-        await asyncio.sleep(.02)
+        await backend.start()
         assert backend.last_error == 'RuntimeError'
         await backend.stop()
-        assert backend.task is None
     asyncio.run(exercise())
 
 
@@ -89,14 +100,18 @@ def test_missing_backend_service_does_not_break_dashboard(tmp_path):
     '{"plugins":{"enabled":"bot-coms"}}',
     '{"plugins":{"enabled":["bot-coms"],"disabled":"other"}}',
 ])
-def test_invalid_config_cancels_active_backend(tmp_path, invalid):
+def test_invalid_config_cancels_active_backend(tmp_path, invalid, monkeypatch):
+    monkeypatch.setenv('BOT_COMS_DOORBELL', '1')
     configure(tmp_path)
     runtime = Runtime()
     backend = TeamBackend(tmp_path, factory=lambda _: runtime)
     async def exercise():
-        await backend.tick()
+        await backend.start()
         (tmp_path / 'config.yaml').write_text(invalid)
-        await backend.tick()
+        from bot_coms.dashboard_wake import poke
+        poke()
+        await asyncio.sleep(0.05)
         assert runtime.cancelled
         assert backend.runtime is None
+        await backend.stop()
     asyncio.run(exercise())
