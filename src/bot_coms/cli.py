@@ -165,6 +165,10 @@ def cmd_worker(ns: argparse.Namespace) -> int:
 
     if ns.notify_argv:
         os.environ["BOT_COMS_NOTIFY_ARGV"] = json.dumps(ns.notify_argv)
+    if ns.completion_sink_argv:
+        os.environ["BOT_COMS_COMPLETION_SINK_ARGV"] = json.dumps(
+            ns.completion_sink_argv
+        )
     spec = ns.handler
     mod_name, func_name = spec.rsplit(":", 1)
     func = getattr(importlib.import_module(mod_name), func_name)
@@ -277,6 +281,15 @@ def build_parser() -> argparse.ArgumentParser:
         action="append",
         default=None,
         help="Notify argv fragment; repeat for each token. Use {source} for headers.source.",
+    )
+    worker.add_argument(
+        "--completion-sink-argv",
+        action="append",
+        default=None,
+        help=(
+            "Structured completion argv fragment; repeat for each token. "
+            "Use {route} for envelope.to and {source} for headers.source."
+        ),
     )
     worker.add_argument(
         "--idle-rounds",

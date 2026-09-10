@@ -6,9 +6,10 @@ import json
 import subprocess
 from typing import Any
 
+from bot_coms.envelope import dumps_envelope
 from bot_coms.headers import default_source, is_notifiable_source, source_from_headers
-from bot_coms.profile_env import resolve_notify_argv_raw
-from bot_coms.types import ClaimedMessage, HandlerError, SkipMessage
+from bot_coms.profile_env import resolve_completion_sink_argv_raw, resolve_notify_argv_raw
+from bot_coms.types import ClaimedMessage, Envelope, HandlerError, SkipMessage
 
 
 def notify_argv_from_env() -> list[str]:
@@ -21,8 +22,40 @@ def notify_argv_from_env() -> list[str]:
     return [str(part) for part in data]
 
 
+def completion_sink_argv_from_env(*, peer_id: str | None = None) -> list[str]:
+    raw = resolve_completion_sink_argv_raw(peer_id=peer_id)
+    if not raw:
+        raise RuntimeError(
+            "BOT_COMS_COMPLETION_SINK_ARGV is required for completion_sink_argv handler"
+        )
+    try:
+        data = json.loads(raw)
+    except json.JSONDecodeError as exc:
+        raise RuntimeError("BOT_COMS_COMPLETION_SINK_ARGV must be valid JSON") from exc
+    if (
+        not isinstance(data, list)
+        or not data
+        or not all(isinstance(part, str) for part in data)
+        or not data[0]
+    ):
+        raise RuntimeError(
+            "BOT_COMS_COMPLETION_SINK_ARGV must be a non-empty JSON array of strings"
+        )
+    return data
+
+
 def format_notify_argv(argv: list[str], source: str) -> list[str]:
     return [part.format(source=source) for part in argv]
+
+
+def format_completion_sink_argv(
+    argv: list[str], *, route: str, source: str
+) -> list[str]:
+    """Substitute routing tokens within argv elements, never through a shell."""
+    return [
+        part.replace("{route}", route).replace("{source}", source)
+        for part in argv
+    ]
 
 
 def payload_text(payload: dict[str, Any]) -> str:
@@ -65,6 +98,32 @@ def run_notify_argv(argv: list[str], source: str, payload: dict[str, Any]) -> No
         )
 
 
+def run_completion_sink_argv(
+    argv: list[str], *, route: str, source: str, envelope: Envelope
+) -> None:
+    try:
+        proc = subprocess.run(  # noqa: S603 — argv from operator config
+            format_completion_sink_argv(argv, route=route, source=source),
+            input=dumps_envelope(envelope) + "\n",
+            text=True,
+            capture_output=True,
+            check=False,
+            shell=False,
+        )
+    except OSError as exc:
+        raise HandlerError(
+            f"completion sink argv could not start: {exc}",
+            retryable=True,
+        ) from exc
+    if proc.returncode != 0:
+        detail = (proc.stderr or proc.stdout or "").strip()[:2000]
+        suffix = f": {detail}" if detail else ""
+        raise HandlerError(
+            f"completion sink argv failed (exit {proc.returncode}){suffix}",
+            retryable=True,
+        )
+
+
 def source_argv(claimed: ClaimedMessage) -> dict[str, Any] | None:
     """Worker handler: deliver terminal responses with headers.source via argv."""
     env = claimed.envelope
@@ -78,4 +137,18 @@ def source_argv(claimed: ClaimedMessage) -> dict[str, Any] | None:
     if not is_notifiable_source(source):
         return None
     run_notify_argv(notify_argv_from_env(), source, env.payload)
+    return None
+
+
+def completion_sink_argv(claimed: ClaimedMessage) -> dict[str, Any] | None:
+    """Deliver an external response envelope to a structured argv callback."""
+    env = claimed.envelope
+    if env.type != "response" or (env.headers or {}).get("delivery") == "internal":
+        raise SkipMessage()
+    run_completion_sink_argv(
+        completion_sink_argv_from_env(peer_id=claimed.peer_id),
+        route=env.to,
+        source=source_from_headers(env.headers),
+        envelope=env,
+    )
     return None

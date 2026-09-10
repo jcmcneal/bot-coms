@@ -49,9 +49,27 @@ Rules:
 1. **Stamp once** at the originator (first hop from a messaging session): set `headers.source` on the outbound request.
 2. **Copy on re-assign**: every downstream `send` must copy inbound `headers` unchanged (use `forward_headers`).
 3. **Fold up the peer chain**: when a child finishes, the parent `ack`s its claimed request with `result={...}`. That emits a `type=response` into the parent's `reply_to` inbox with `headers` preserved. Repeat until the originator receives the final response.
-4. **Human notify once**: only the originator peer runs an external notify argv (e.g. `hermes send --to $source`) against the terminal `response`. Intermediate peers never notify humans.
+4. **Wake an asynchronous owner**: a receiver may run the opt-in structured completion sink against an external `response`. The sink gets the full envelope and may wake the `to` peer's external owner so that owner can inspect the correlated result and generate its own follow-up. It does not add group state to bot-coms and must not notify humans on an intermediate peer's behalf.
+5. **Human notify once**: only the final originator peer runs an external notify argv (e.g. `hermes send --to $source`) against the terminal `response`. Intermediate peers never notify humans.
 
 `ack` without `result` is a silent lifecycle tick (no parent response). Fold-up requires `ack` + `result`.
+
+### Structured completion sink
+
+Run `bot_coms.notify:completion_sink_argv` under `Worker` and configure
+`BOT_COMS_COMPLETION_SINK_ARGV` as a JSON argv array. Each argv element may contain
+`{route}` (the response `to` peer) and `{source}` (the opaque `headers.source`);
+bot-coms performs literal replacement and starts the process without a shell. The
+complete response envelope is serialized as UTF-8 JSON on stdin.
+
+The handler only accepts external `type=response` envelopes. Non-responses and
+responses with `headers.delivery=internal` are released unchanged for another
+handler. Exit zero acknowledges the response; start errors and non-zero exits nack
+it through the normal retry/backoff/dead-letter contract. Delivery to the callback
+is therefore at-least-once: callbacks should deduplicate on envelope `id`.
+
+The legacy `bot_coms.notify:source_argv` contract is unchanged: it receives only
+the response payload on stdin and uses `BOT_COMS_NOTIFY_ARGV`.
 
 Peer ids match `^[a-z][a-z0-9_-]{0,63}$`. Ids must not contain path separators or `..`.
 

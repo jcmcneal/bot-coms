@@ -10,6 +10,7 @@ from bot_coms.session_context import get_env
 
 _DEFAULT_SOURCE_KEY = "BOT_COMS_DEFAULT_SOURCE"
 _NOTIFY_ARGV_KEY = "BOT_COMS_NOTIFY_ARGV"
+_COMPLETION_SINK_ARGV_KEY = "BOT_COMS_COMPLETION_SINK_ARGV"
 
 
 def hermes_team_root() -> Path:
@@ -154,3 +155,7 @@ def resolve_default_source(*, peer_id: str | None = None) -> str:
 
 def resolve_notify_argv_raw(*, peer_id: str | None = None) -> str:
     return resolve_env_var(_NOTIFY_ARGV_KEY, peer_id=peer_id)
+
+
+def resolve_completion_sink_argv_raw(*, peer_id: str | None = None) -> str:
+    return resolve_env_var(_COMPLETION_SINK_ARGV_KEY, peer_id=peer_id)

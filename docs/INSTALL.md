@@ -18,6 +18,7 @@ Env vars:
 | `BOT_COMS_TOKEN` | Allowlist token (never logged) |
 | `BOT_COMS_DEFAULT_SOURCE` | Optional `headers.source` stamp for cli/tui assigns; falls back to team/profile dotenv |
 | `BOT_COMS_NOTIFY_ARGV` | Optional JSON argv for legacy `bot_coms.notify:source_argv` (not the reply-stack control plane) |
+| `BOT_COMS_COMPLETION_SINK_ARGV` | Optional JSON argv for `bot_coms.notify:completion_sink_argv`; `{route}` is response `to`, `{source}` is preserved `headers.source`, and stdin is the full response envelope |
 | `BOT_COMS_DOORBELL` | `1` (default) ring Hermes/adapter after spool put; set `0` in tests |
 | `BOT_COMS_SPM_PING` | Override path to SPM webhook adapter (default `~/.hermes/team/ping-spm.sh`) |
 | `BOT_COMS_PEERS_YAML` | Optional peers roster (default `~/.hermes/team/peers.yaml`); job-done + doorbell routing |
@@ -42,6 +43,26 @@ bot-coms ack --root /tmp/bot-coms-demo --peer b --id <ID>
 bot-coms smoke --all
 ```
 
+## Asynchronous completion sink
+
+An external owner of peer `b` can consume responses from work delegated to another
+peer without bot-coms knowing anything about the messaging platform:
+
+```bash
+export BOT_COMS_COMPLETION_SINK_ARGV='["/opt/bot-owner/wake","--route","{route}","--source","{source}"]'
+bot-coms worker --root /var/lib/bot-coms --peer b \
+  --handler bot_coms.notify:completion_sink_argv
+```
+
+The command is invoked directly as argv (never through a shell) and receives the
+complete response envelope as JSON on stdin. It must exit zero before the response
+is acknowledged. A non-zero exit retries and eventually dead-letters under the
+spool's Worker policy. The callback can be delivered more than once after a crash,
+so deduplicate by envelope `id`. Non-responses and `delivery=internal` responses
+are left untouched. The env value also follows the existing team/profile dotenv
+fallback lookup. `--completion-sink-argv` may be repeated instead of setting the
+env var.
+
 ## Hermes adapter (user-driven)
 
 This package **does not** edit Hermes configuration.
@@ -53,7 +74,8 @@ This package **does not** edit Hermes configuration.
 The adapter imports only `bot_coms` plus Hermes `PluginContext`. It does not import A2A or read BUS.md.
 
 Required at tool-call time: `BOT_COMS_SPOOL_ROOT`, `BOT_COMS_PEER_ID`. Optional:
-`BOT_COMS_TOKEN`, `BOT_COMS_DEFAULT_SOURCE`, `BOT_COMS_NOTIFY_ARGV` (PM notify worker).
+`BOT_COMS_TOKEN`, `BOT_COMS_DEFAULT_SOURCE`, `BOT_COMS_NOTIFY_ARGV` (legacy PM
+notify worker), `BOT_COMS_COMPLETION_SINK_ARGV` (structured response callback).
 
 ## Persistent messaging
 

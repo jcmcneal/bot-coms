@@ -87,6 +87,19 @@ bot-coms worker --peer pm --handler bot_coms.notify:source_argv \
 The worker reads the response `payload` from stdin of that argv. Intermediate peers
 only fold results up the chain via `ack` + `result`; they do not notify humans.
 
+For an asynchronous delegator whose external owner must wake and decide the next
+step, use the structured handler instead:
+
+```bash
+export BOT_COMS_COMPLETION_SINK_ARGV='["/opt/bot-owner/wake","--route","{route}","--source","{source}"]'
+bot-coms worker --peer swe --handler bot_coms.notify:completion_sink_argv
+```
+
+It receives the full response envelope on stdin, substitutes `route` from
+envelope `to` and `source` from the preserved opaque header, skips internal mail,
+and acknowledges only after exit zero. Failures use normal Worker retries and
+dead-lettering. The callback must deduplicate by envelope id.
+
 ## Pulse integration
 
 Each pulse must call `bot_coms_reclaim` before deciding whether to start a
