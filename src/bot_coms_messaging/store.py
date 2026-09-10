@@ -7,6 +7,8 @@ import uuid
 from contextlib import contextmanager
 from pathlib import Path
 
+from bot_coms.dashboard_wake import poke
+
 from .mentions import resolve_mentions
 
 
@@ -185,11 +187,14 @@ class Store:
             if targets and not set(targets).issubset(json.loads(row['profiles'])):
                 raise Problem(403, 'A recipient is not a conversation member')
             mid = self._append(db, row, 'user', body, client_id, json.dumps(sorted(set(recipients))))
+            inserted = False
             for profile in targets:
-                db.execute(
+                inserted |= bool(db.execute(
                     'INSERT INTO dispatches(id,conversation,message,profile,created,parent_dispatch,hop,origin_message) '
                     'VALUES(?,?,?,?,?,?,?,?)',
-                    (new_id(), cid, mid, profile, time.time(), None, 0, mid))
+                    (new_id(), cid, mid, profile, time.time(), None, 0, mid)).rowcount)
+            if inserted:
+                poke()
             return dict(conversation=self._summary(db, self._row(db, owner, cid)),
                         message=self._message(db.execute('SELECT * FROM messages WHERE id=?', (mid,)).fetchone()))
 
@@ -400,6 +405,7 @@ class Store:
                 'VALUES(?,?,?,?,?,?,?,?)',
                 (new_id(), conversation['id'], bot_mid, profile, time.time(),
                  parent['id'], next_hop, origin))
+            poke()
             wakes += 1
 
     def get_turn_decision(self, message_id: str, input_seq: int):
@@ -504,6 +510,7 @@ class Store:
                 'VALUES(?,?,?,?,?,?,?,?)',
                 (dispatch_id, conversation['id'], message_id, profile, time.time(), None, 0, message_id),
             )
+            poke()
             return dispatch_id
 
     def retarget_dispatch(self, dispatch_id: str, profile: str) -> bool:

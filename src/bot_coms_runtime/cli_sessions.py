@@ -180,6 +180,9 @@ class CliSessionRuntime:
         finally:
             self._processes.pop(key, None)
             Path(query_path).unlink(missing_ok=True)
+            from bot_coms.dashboard_wake import poke
+
+            poke()
 
     def cancel(self, *, principal_id, operation_key):
         key = (principal_id, operation_key)

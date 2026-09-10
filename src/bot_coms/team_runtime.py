@@ -140,6 +140,10 @@ def enqueue_wake(team_root: Path, *, profile: str, env: Envelope,
                 ).rowcount
     finally:
         conn.close()
+    if inserted:
+        from bot_coms.dashboard_wake import poke
+
+        poke()
     return inserted
 
 
