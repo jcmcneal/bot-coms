@@ -18,8 +18,8 @@ from . import turn_taking
 
 
 def native_runtime(root):
-    from bot_coms_runtime.cli_sessions import CliSessionRuntime
-    return CliSessionRuntime(Path(root).parent.parent, 'bot-coms-messaging')
+    from bot_coms_runtime.cli_sessions import session_runtime
+    return session_runtime(Path(root).parent.parent, 'bot-coms-messaging')
 
 
 def default_selector_llm():

@@ -51,6 +51,9 @@ def test_plugin_runtime_reuses_the_cli_session_id(tmp_path, monkeypatch):
     settle(runtime, 'account:alice', 'two')
     assert '--resume' in calls[1]
     assert calls[1][calls[1].index('--resume') + 1] == 'session-1'
+    assert '-Q' in calls[0]
+    assert '--source' in calls[0]
+    assert calls[0][calls[0].index('--source') + 1] == 'bot-coms'
 
 
 def test_forget_conversation_drops_bindings_and_operations(tmp_path, monkeypatch):
@@ -65,3 +68,27 @@ def test_forget_conversation_drops_bindings_and_operations(tmp_path, monkeypatch
         principal_id='account:alice', profile='default', conversation_key='dm:1'
     )['session_id'] is None
     assert runtime.status(principal_id='account:alice', operation_key='one') is None
+
+
+def test_session_runtime_prefers_in_process_plugin_sessions(tmp_path, monkeypatch):
+    from bot_coms_runtime import cli_sessions
+
+    class Native:
+        def __init__(self, plugin_id):
+            self.plugin_id = plugin_id
+
+    monkeypatch.setattr(cli_sessions, '_plugin_session_runtime', lambda ns: Native(ns))
+    runtime = cli_sessions.session_runtime(tmp_path, 'bot-coms-messaging')
+    assert runtime.plugin_id == 'bot-coms-messaging'
+
+
+def test_session_runtime_falls_back_to_cli_when_plugin_sessions_missing(tmp_path, monkeypatch):
+    from bot_coms_runtime.cli_sessions import CliSessionRuntime, session_runtime
+    from bot_coms_runtime import cli_sessions
+
+    def boom(namespace):
+        raise RuntimeError('Persistent plugin sessions require the running Hermes backend')
+
+    monkeypatch.setattr(cli_sessions, '_plugin_session_runtime', boom)
+    runtime = session_runtime(tmp_path, 'bot-coms-messaging')
+    assert isinstance(runtime, CliSessionRuntime)

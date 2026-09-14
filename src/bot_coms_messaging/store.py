@@ -232,7 +232,9 @@ class Store:
                     break
                 page.append(message)
                 size += encoded_size
-            runs = db.execute('SELECT id,profile,state AS status,detail FROM dispatches WHERE conversation=? ORDER BY created DESC LIMIT 50', (cid,)).fetchall()
+            runs = db.execute('''SELECT d.id, d.profile, d.state AS status, d.detail, b.session_id
+                FROM dispatches d LEFT JOIN session_bindings b ON b.binding_key=d.binding_key
+                WHERE d.conversation=? ORDER BY d.created DESC LIMIT 50''', (cid,)).fetchall()
             return dict(conversation=self._summary(db, row), messages=[self._message(m) for m in reversed(page)],
                         runs=[dict(r) for r in runs], before=page[-1]['sequence'] if more else None)
 

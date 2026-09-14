@@ -142,6 +142,9 @@ class CliSessionRuntime:
             query.write(text)
             query_path = query.name
         os.chmod(query_path, 0o600)
+        # -Q keeps stdout as the durable reply text. It also suppresses dashboard
+        # stream events; prefer session_runtime() so the in-process gateway emits
+        # message.delta / tool.start to connected WebSocket clients.
         argv = [self._hermes(), "-p", profile, "chat", "-Q", "--in", "~", "--query-file", query_path,
                 "--source", "bot-coms"]
         if session_id:
@@ -220,3 +223,20 @@ class CliSessionRuntime:
         if cancel:
             for principal, operation in list(self._processes):
                 self.cancel(principal_id=principal, operation_key=operation)
+
+
+def _plugin_session_runtime(namespace):
+    from tui_gateway.plugin_sessions import get_session_service
+    return get_session_service(namespace)
+
+
+def session_runtime(root, namespace):
+    """Prefer in-process plugin sessions so dashboard WS clients see live tokens.
+
+    Quiet ``hermes chat -Q`` is the fallback receipt path: it keeps stdout as the
+    final reply, but Hermes suppresses ``message.delta`` / ``tool.start``.
+    """
+    try:
+        return _plugin_session_runtime(namespace)
+    except Exception:
+        return CliSessionRuntime(Path(root), namespace)
