@@ -78,6 +78,7 @@ class MessagingService:
 
         self.acquire()
         try:
+            self.store.clear_stale_stored_session_ids()
             loop = asyncio.get_running_loop()
             dashboard_wake.bind(loop)
             wake = host()
@@ -414,9 +415,7 @@ class MessagingService:
             session_id = receipt.get('session_id')
             if binding is None:
                 raise RuntimeError('Missing plugin session binding')
-            if binding['session_id'] and session_id and binding['session_id'] != session_id:
-                raise RuntimeError('CLI runtime returned a different session identity')
-            if session_id and not binding['session_id']:
+            if session_id:
                 db.execute('UPDATE session_bindings SET session_id=? WHERE binding_key=?', (session_id, d['binding_key']))
             db.execute('INSERT OR IGNORE INTO session_messages SELECT ?,message FROM dispatch_context WHERE dispatch=?',
                        (d['binding_key'], d['id']))
@@ -479,9 +478,6 @@ class MessagingService:
                 return False
         session = await self.call('ensure_session', principal_id=d['owner'], profile=profile['name'], conversation_key=key, title=d['title'])
         with self.store.db() as db:
-            if binding['session_id'] and session['session_id'] and binding['session_id'] != session['session_id']:
-                db.execute('UPDATE session_bindings SET blocked=1 WHERE binding_key=?', (key,))
-                return False
             if session['session_id']:
                 db.execute('UPDATE session_bindings SET session_id=? WHERE binding_key=?', (session['session_id'], key))
             trigger = db.execute('SELECT sequence FROM messages WHERE id=?', (d['message'],)).fetchone()[0]

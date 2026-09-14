@@ -29,6 +29,10 @@ def test_messaging_real_native_session_reuse(runtime):
         history = backend.store.history('test:alice', first['conversation']['id'])
         assert history['runs'][0]['status'] == 'completed', history
         assert history['messages'][-1]['body'].startswith('reply:')
+        from tui_gateway import server as gateway
+        live = history['runs'][0]['session_id']
+        assert live in gateway._sessions
+        assert live != gateway._sessions[live]['session_key']
         backend.store.send('test:alice', 'two', 'hello two', [], dm=('default-id', 'Default'))
         asyncio.run(backend.tick())
         asyncio.run(backend.tick())
