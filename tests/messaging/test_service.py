@@ -1,6 +1,7 @@
 import asyncio
 import json
 import sqlite3
+import hashlib
 import fcntl
 from types import SimpleNamespace
 
@@ -321,6 +322,92 @@ def test_malformed_plugin_enablement_cancels_active_run(root, instance):
         assert backend.store.history('test:alice', cid)['runs'][0]['status'] == 'cancelled'
     finally:
         backend.release()
+
+
+def test_admit_adopts_plugin_session_id_when_cli_binding_is_stale(root):
+    runtime = Runtime()
+    backend = service(root, runtime)
+    try:
+        cid = send(backend.store)
+        config = json.loads((root / 'config.json').read_text())
+        key = hashlib.sha256(json.dumps(
+            [config['server_id'], 'test:alice', cid, 'swe-id'], separators=(',', ':')
+        ).encode()).hexdigest()
+        with backend.store.db() as db:
+            db.execute(
+                'INSERT INTO session_bindings(binding_key,server_id,owner,conversation,profile,profile_name,session_id) '
+                'VALUES(?,?,?,?,?,?,?)',
+                (key, config['server_id'], 'test:alice', cid, 'swe-id', 'swe', '20260909_131547_ca97bb'),
+            )
+        tick(backend)
+        with backend.store.db() as db:
+            row = db.execute(
+                'SELECT session_id, blocked FROM session_bindings WHERE binding_key=?', (key,)
+            ).fetchone()
+            assert row['blocked'] == 0
+            assert row['session_id'] == 'session-0'
+        assert len(backend.runtime.calls) == 1
+        history = backend.store.history('test:alice', cid)
+        assert history['runs'][0]['session_id'] == 'session-0'
+        assert history['runs'][0]['status'] == 'running'
+    finally:
+        backend.release()
+
+
+def test_record_delivery_adopts_runtime_session_id(root):
+    runtime = Runtime()
+    backend = service(root, runtime)
+    try:
+        cid = send(backend.store)
+        tick(backend)
+        with backend.store.db() as db:
+            d = dict(db.execute(
+                "SELECT d.*, c.owner FROM dispatches d JOIN conversations c ON c.id=d.conversation"
+            ).fetchone())
+            db.execute(
+                'UPDATE session_bindings SET session_id=? WHERE binding_key=?',
+                ('20260911_093331_f92628', d['binding_key']),
+            )
+        backend.record_delivery(d, dict(status='running', session_id='live-sid-ab'))
+        with backend.store.db() as db:
+            assert db.execute(
+                'SELECT session_id, blocked FROM session_bindings WHERE binding_key=?',
+                (d['binding_key'],),
+            ).fetchone()['session_id'] == 'live-sid-ab'
+        assert backend.store.history('test:alice', cid)['runs'][0]['session_id'] == 'live-sid-ab'
+    finally:
+        backend.release()
+
+
+def test_clear_stale_stored_session_ids_leaves_live_sids_and_blocked(root):
+    store = Store(root)
+    cid = send(store)
+    with store.db() as db:
+        db.execute(
+            'INSERT INTO session_bindings(binding_key,server_id,owner,conversation,profile,profile_name,session_id,blocked) '
+            'VALUES(?,?,?,?,?,?,?,0)',
+            ('cli-key', 'test-server', 'test:alice', cid, 'swe-id', 'swe', '20260909_131547_ca97bb'),
+        )
+        db.execute(
+            'INSERT INTO session_bindings(binding_key,server_id,owner,conversation,profile,profile_name,session_id,blocked) '
+            'VALUES(?,?,?,?,?,?,?,1)',
+            ('blocked-key', 'test-server', 'test:alice', cid, 'designer-id', 'designer', '20260911_093331_f92628'),
+        )
+        db.execute(
+            'INSERT INTO session_bindings(binding_key,server_id,owner,conversation,profile,profile_name,session_id,blocked) '
+            'VALUES(?,?,?,?,?,?,?,0)',
+            ('live-key', 'test-server', 'test:alice', cid, 'other-id', 'other', 'a1b2c3d4'),
+        )
+    assert store.clear_stale_stored_session_ids() == 2
+    with store.db() as db:
+        rows = {r['binding_key']: dict(r) for r in db.execute(
+            'SELECT binding_key, session_id, blocked FROM session_bindings'
+        )}
+    assert rows['cli-key']['session_id'] is None
+    assert rows['cli-key']['blocked'] == 0
+    assert rows['blocked-key']['session_id'] is None
+    assert rows['blocked-key']['blocked'] == 1
+    assert rows['live-key']['session_id'] == 'a1b2c3d4'
 
 
 def test_disabled_other_group_member_does_not_revoke_active_recipient(root):

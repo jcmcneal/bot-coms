@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 import json
+import re
 import sqlite3
 import time
 import uuid
@@ -10,6 +11,10 @@ from pathlib import Path
 from bot_coms.dashboard_wake import poke
 
 from .mentions import resolve_mentions
+
+# Hermes sqlite session keys (CLI --resume / plugin-sessions bindings), not the
+# live runtime sid that /api/ws events carry. Overlay binds runs[] to that live id.
+_STORED_SESSION_KEY = re.compile(r'^\d{8}_\d{6}_[0-9a-fA-F]{6}$')
 
 
 class Problem(Exception):
@@ -91,6 +96,28 @@ class Store:
         with self.db() as db:
             db.executescript(_SCHEMA)
         self.path.chmod(0o600)
+
+    def clear_stale_stored_session_ids(self) -> int:
+        """Drop leftover CLI/sqlite stored keys so the next plugin admit can record the live sid.
+
+        Overlay matches ``runs[].session_id`` to live ``/api/ws`` ``session_id``. Stored keys are a
+        different identifier; keeping them fenced the first plugin turn (identity mismatch).
+        Does not clear ``blocked``: indeterminate settle remains a hard fence.
+        """
+        cleared = 0
+        with self.db() as db:
+            rows = db.execute(
+                'SELECT binding_key, session_id FROM session_bindings WHERE session_id IS NOT NULL'
+            ).fetchall()
+            for row in rows:
+                if not _STORED_SESSION_KEY.fullmatch(row['session_id'] or ''):
+                    continue
+                db.execute(
+                    'UPDATE session_bindings SET session_id=NULL WHERE binding_key=?',
+                    (row['binding_key'],),
+                )
+                cleared += 1
+        return cleared
 
     @contextmanager
     def db(self):
