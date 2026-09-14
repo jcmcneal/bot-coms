@@ -100,12 +100,13 @@ class CliSessionRuntime:
         raise RuntimeError("The dashboard Python environment does not provide the hermes CLI")
 
     def submit(self, *, principal_id, profile, conversation_key, operation_key, text,
-               title=None, session_env=None, max_turns=None):
+               title=None, session_env=None, max_turns=None, origin=None):
         self._require(principal_id, "principal_id")
         self._require(profile, "profile")
         self._require(conversation_key, "conversation_key")
         self._require(operation_key, "operation_key")
         self._require(text, "text")
+        _ = origin
         env_values = session_env or {}
         if not isinstance(env_values, dict) or any(not isinstance(k, str) or not isinstance(v, str)
                                                    or k.startswith("HERMES_") for k, v in env_values.items()):

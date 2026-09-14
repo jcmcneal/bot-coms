@@ -520,8 +520,15 @@ class MessagingService:
                 'the client shows the display name.\n\n'
                 + json.dumps(payload, ensure_ascii=False)
             )
-            receipt = await self.call('submit', principal_id=d['owner'], profile=profile['name'], conversation_key=key,
-                            operation_key=self.operation(d), text=prompt, title=d['title'], max_turns=current['max_turns'])
+            receipt = await self.call(
+                'submit', principal_id=d['owner'], profile=profile['name'], conversation_key=key,
+                operation_key=self.operation(d), text=prompt, title=d['title'],
+                max_turns=current['max_turns'],
+                origin={
+                    'conversation_id': d['conversation'],
+                    'run_id': d['id'],
+                    'profile_id': d['profile'],
+                })
             self.record_delivery({**d, 'binding_key': key}, receipt)
         except Exception as error:
             # This native exception is guaranteed to precede journal admission.

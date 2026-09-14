@@ -95,6 +95,14 @@ def test_two_sends_reuse_session_and_send_only_unseen_context(root):
         assert 'follow up' in runtime.calls[1]['text']
         assert 'hello' not in runtime.calls[1]['text']
         assert 'first answer' not in runtime.calls[1]['text']
+        assert runtime.calls[0]['origin'] == {
+            'conversation_id': cid,
+            'run_id': runtime.calls[0]['operation_key'].removeprefix('messaging:'),
+            'profile_id': 'swe-id',
+        }
+        assert runtime.calls[1]['origin']['conversation_id'] == cid
+        assert runtime.calls[1]['origin']['run_id'] != runtime.calls[0]['origin']['run_id']
+        assert runtime.calls[1]['origin']['profile_id'] == 'swe-id'
         runtime.finish('second answer')
         tick(backend)
         assert len(backend.store.history('test:alice', cid)['messages']) == 4
