@@ -170,6 +170,22 @@ def test_history_pagination_and_event_replay(root):
     assert s.events('test:alice',first['cursor'])['events'] == []
 
 
+def test_history_runs_include_session_id_from_bindings(root):
+    s = Store(root)
+    sent = s.send('test:alice', 'm1', 'hello', [], dm=('swe-id', 'SWE'))
+    cid = sent['conversation']['id']
+    with s.db() as db:
+        db.execute(
+            "INSERT INTO session_bindings(binding_key,server_id,owner,conversation,profile,profile_name,session_id) "
+            "VALUES('bk','test-server','test:alice',?,'swe-id','swe','hermes-session-9')",
+            (cid,),
+        )
+        db.execute("UPDATE dispatches SET state='running', binding_key='bk' WHERE conversation=?", (cid,))
+    runs = s.history('test:alice', cid)['runs']
+    assert runs[0]['session_id'] == 'hermes-session-9'
+    assert runs[0]['status'] == 'running'
+
+
 
 
 

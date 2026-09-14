@@ -40,9 +40,9 @@ def default_root() -> Path:
 def create_runtime(root: Path):
     from bot_coms.team_runtime import TeamRuntime
     from bot_coms_board.coordinator import reconcile_team
-    from bot_coms_runtime.cli_sessions import CliSessionRuntime
+    from bot_coms_runtime.cli_sessions import session_runtime
     return TeamRuntime(team_root=root / 'team', spool_root=root / 'team' / 'spool',
-                       executor=CliSessionRuntime(root, 'bot-coms'),
+                       executor=session_runtime(root, 'bot-coms'),
                        reconciler=lambda: reconcile_team(root / 'team', root / 'team' / 'spool'))
 
 
