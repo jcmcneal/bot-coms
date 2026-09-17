@@ -225,7 +225,7 @@ class Store:
                     'INSERT INTO dispatches(id,conversation,message,profile,created,parent_dispatch,hop,origin_message) '
                     'VALUES(?,?,?,?,?,?,?,?)',
                     (new_id(), cid, mid, profile, time.time(), None, 0, mid)).rowcount)
-            if inserted:
+            if inserted or not targets:
                 poke()
             return dict(conversation=self._summary(db, self._row(db, owner, cid)),
                         message=self._message(db.execute('SELECT * FROM messages WHERE id=?', (mid,)).fetchone()))

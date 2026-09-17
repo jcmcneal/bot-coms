@@ -80,7 +80,7 @@ class MessagingService:
         try:
             self.store.clear_stale_stored_session_ids()
             loop = asyncio.get_running_loop()
-            dashboard_wake.bind(loop)
+            dashboard_wake.bind(loop, team_root=self.root.parent.parent / 'team')
             wake = host()
             # Reconcile durable running admissions before accepting new turns.
             await self.tick()
@@ -94,12 +94,15 @@ class MessagingService:
             raise
 
     async def _wake_tick(self):
+        from bot_coms import dashboard_wake
+
         try:
             await self.tick()
         except Exception:
             # No private runtime errors in public capabilities or transcripts.
             with self.store.db() as db:
                 db.execute("DELETE FROM meta WHERE key='heartbeat'")
+            dashboard_wake.poke()
 
     async def stop(self):
         from bot_coms_runtime.wake_host import host
