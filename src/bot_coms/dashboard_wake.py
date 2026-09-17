@@ -70,10 +70,17 @@ def poke() -> None:
     if _wake_event is not None and _loop is not None:
         _signal_event()
         return
-    if _wake_pipe is None:
-        return
+    path = _wake_pipe
+    if path is None:
+        # Cross-process callers (CLI Store.send) never bind; still poke the team FIFO
+        # the dashboard reader is attached to. Event-driven only — not a timer.
+        candidate = Path.home() / '.hermes' / 'team' / '.dashboard-wake.pipe'
+        if candidate.exists():
+            path = candidate
+        else:
+            return
     try:
-        with _wake_pipe.open('wb') as handle:
+        with path.open('wb') as handle:
             handle.write(b'\0')
     except OSError:
         return
