@@ -225,7 +225,7 @@ class Store:
                     'INSERT INTO dispatches(id,conversation,message,profile,created,parent_dispatch,hop,origin_message) '
                     'VALUES(?,?,?,?,?,?,?,?)',
                     (new_id(), cid, mid, profile, time.time(), None, 0, mid)).rowcount)
-            if inserted:
+            if inserted or not targets:
                 poke()
             return dict(conversation=self._summary(db, self._row(db, owner, cid)),
                         message=self._message(db.execute('SELECT * FROM messages WHERE id=?', (mid,)).fetchone()))
@@ -597,3 +597,35 @@ class Store:
         with self.db() as db:
             rows = db.execute('SELECT * FROM events WHERE owner=? AND sequence>? ORDER BY sequence LIMIT 200', (owner, after)).fetchall()
             return dict(events=[dict(r) for r in rows], cursor=rows[-1]['sequence'] if rows else after)
+
+    def heartbeat_age(self) -> float | None:
+        """Seconds since the last successful messaging tick, or None if unset."""
+        with self.db() as db:
+            row = db.execute("SELECT value FROM meta WHERE key='heartbeat'").fetchone()
+        if row is None:
+            return None
+        return time.time() - float(row['value'])
+
+    def has_pending_work(self) -> bool:
+        """True when admission, settlement, or empty-To turn-taking may still be needed."""
+        with self.db() as db:
+            if db.execute(
+                """SELECT 1 FROM dispatches WHERE state='queued' OR state='running'
+                   OR (state='cancelled' AND binding_key IS NOT NULL AND runtime_ack=0) LIMIT 1"""
+            ).fetchone():
+                return True
+            if db.execute(
+                """SELECT 1 FROM messages m
+                   JOIN conversations c ON c.id=m.conversation
+                   WHERE c.kind='group' AND m.author='user'
+                     AND (m.recipients IS NULL OR m.recipients='[]')
+                     AND NOT EXISTS (SELECT 1 FROM dispatches d WHERE d.message=m.id)
+                     AND NOT EXISTS (
+                       SELECT 1 FROM turn_decisions t
+                       WHERE t.message=m.id AND t.input_seq=m.sequence
+                         AND t.action='yield' AND t.shadow=0
+                     )
+                   LIMIT 1"""
+            ).fetchone():
+                return True
+        return False

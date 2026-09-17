@@ -32,12 +32,23 @@ def default_selector_llm():
 
 
 class MessagingService:
-    def __init__(self, root: Path, runtime, selector=None):
+    def __init__(
+        self,
+        root: Path,
+        runtime,
+        selector=None,
+        *,
+        seatbelt_stale_seconds: float | None = None,
+        seatbelt_check_interval: float | None = None,
+    ):
         self.root, self.runtime = Path(root), runtime
         self.store = Store(root)
         self.selector = selector
         self._leases = []
         self._registered = False
+        self._seatbelt = None
+        self._seatbelt_stale_seconds = seatbelt_stale_seconds
+        self._seatbelt_check_interval = seatbelt_check_interval
 
     def acquire(self):
         """Fence other backends and refuse cutover while a legacy CLI holds a lease."""
@@ -76,12 +87,24 @@ class MessagingService:
         from bot_coms import dashboard_wake
         from bot_coms_runtime.wake_host import host
 
+        from .seatbelt import MessagingSeatbelt, DEFAULT_CHECK_INTERVAL, DEFAULT_STALE_SECONDS
+
         self.acquire()
         try:
             self.store.clear_stale_stored_session_ids()
             loop = asyncio.get_running_loop()
-            dashboard_wake.bind(loop)
+            dashboard_wake.bind(loop, team_root=self.root.parent.parent / 'team')
             wake = host()
+            seatbelt_kwargs = {}
+            if self._seatbelt_stale_seconds is not None:
+                seatbelt_kwargs['stale_seconds'] = self._seatbelt_stale_seconds
+            if self._seatbelt_check_interval is not None:
+                seatbelt_kwargs['check_interval'] = self._seatbelt_check_interval
+            self._seatbelt = MessagingSeatbelt(
+                self.store,
+                stale_seconds=seatbelt_kwargs.get('stale_seconds', DEFAULT_STALE_SECONDS),
+                check_interval=seatbelt_kwargs.get('check_interval', DEFAULT_CHECK_INTERVAL),
+            )
             # Reconcile durable running admissions before accepting new turns.
             await self.tick()
             if not self._registered:
@@ -89,21 +112,31 @@ class MessagingService:
                 self._registered = True
             with self.store.db() as db:
                 db.execute("INSERT OR REPLACE INTO meta VALUES('heartbeat',?)", (str(time.time()),))
+            self._seatbelt.sync()
         except BaseException:
             self.release()
             raise
 
     async def _wake_tick(self):
+        from bot_coms import dashboard_wake
+
         try:
             await self.tick()
         except Exception:
             # No private runtime errors in public capabilities or transcripts.
             with self.store.db() as db:
                 db.execute("DELETE FROM meta WHERE key='heartbeat'")
+            dashboard_wake.poke()
+        finally:
+            if self._seatbelt is not None:
+                self._seatbelt.sync()
 
     async def stop(self):
         from bot_coms_runtime.wake_host import host
 
+        if self._seatbelt is not None:
+            await self._seatbelt.stop()
+            self._seatbelt = None
         if self._registered:
             await host().unregister(self._wake_tick)
             self._registered = False
@@ -469,6 +502,8 @@ class MessagingService:
                 admitted.add(d['conversation'])
         with self.store.db() as db:
             db.execute("INSERT OR REPLACE INTO meta VALUES('heartbeat',?)", (str(time.time()),))
+        if self._seatbelt is not None:
+            self._seatbelt.sync()
 
     async def admit(self, d, config):
         profile = next(p for p in config['profiles'] if p['id'] == d['profile'])
