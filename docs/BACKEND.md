@@ -133,6 +133,15 @@ timeouts fall back to the default responder for unanswered human requests.
 Decisions are stored in SQLite `turn_decisions` and reused for the same message
 sequence so a tick replay does not re-ask the model.
 
+When mode is `on` and the selector yields (or a newer human message supersedes
+the empty-To request), the backend emits a `turn.yielded` event on `/v1/events`
+with JSON `detail` `{"message":"<id>","reason":"<reason>"}`. Reasons include
+`human`, `nothing_new`, and other selector outcomes. This is the terminal settle
+for empty-To messages that never queue a dispatch — clients should clear any
+pending loader on this event the same way they do for `run.updated` after a
+completed dispatch. Explicit recipients and normal bot replies continue to settle
+via `run.updated` only.
+
 
 ## Current integration boundaries
 

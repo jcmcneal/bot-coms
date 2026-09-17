@@ -451,7 +451,7 @@ def test_on_mode_yield_skips_submit(root):
     backend = service(root, selector=selector)
     try:
         group = backend.store.groups('test:alice', 'Group', ['swe-id', 'designer-id'], 'swe-id', 'g')
-        backend.store.send('test:alice', 'first', 'hello everyone', [], cid=group['id'])
+        sent = backend.store.send('test:alice', 'first', 'hello everyone', [], cid=group['id'])
         tick(backend)
         assert selector.calls
         assert backend.runtime.calls == []
@@ -461,6 +461,51 @@ def test_on_mode_yield_skips_submit(root):
             assert row['action'] == 'yield'
             assert row['speaker'] is None
         assert backend.store.history('test:alice', group['id'])['runs'] == []
+        events = backend.store.events('test:alice', 0)['events']
+        yielded = [e for e in events if e['kind'] == 'turn.yielded']
+        assert len(yielded) == 1
+        assert json.loads(yielded[0]['detail']) == {
+            'message': sent['message']['id'],
+            'reason': 'nothing_new',
+        }
+    finally:
+        backend.release()
+
+
+def test_empty_to_human_yield_emits_terminal_settle(root):
+    set_mode(root, 'on')
+    selector = StubSelector({'action': 'yield', 'reason': 'human'})
+    backend = service(root, selector=selector)
+    try:
+        group = backend.store.groups('test:alice', 'Group', ['swe-id', 'designer-id'], 'swe-id', 'g')
+        sent = backend.store.send('test:alice', 'first', 'anyone?', [], cid=group['id'])
+        tick(backend)
+        events = backend.store.events('test:alice', 0)['events']
+        yielded = [e for e in events if e['kind'] == 'turn.yielded']
+        assert len(yielded) == 1
+        assert json.loads(yielded[0]['detail']) == {
+            'message': sent['message']['id'],
+            'reason': 'human',
+        }
+        assert not [e for e in events if e['kind'] == 'run.updated']
+    finally:
+        backend.release()
+
+
+def test_explicit_to_complete_still_emits_run_updated_not_turn_yielded(root):
+    set_mode(root, 'on')
+    selector = StubSelector({'action': 'yield', 'reason': 'human'})
+    backend = service(root, selector=selector)
+    try:
+        group = backend.store.groups('test:alice', 'Group', ['swe-id', 'designer-id'], 'swe-id', 'g')
+        backend.store.send('test:alice', 'first', 'hello', ['designer-id'], cid=group['id'])
+        tick(backend)
+        backend.runtime.finish('done')
+        tick(backend)
+        events = backend.store.events('test:alice', 0)['events']
+        assert not [e for e in events if e['kind'] == 'turn.yielded']
+        assert [e for e in events if e['kind'] == 'run.updated']
+        assert backend.store.history('test:alice', group['id'])['runs'][0]['status'] == 'completed'
     finally:
         backend.release()
 

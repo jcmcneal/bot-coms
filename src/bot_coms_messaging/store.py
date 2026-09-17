@@ -61,7 +61,8 @@ _SCHEMA = '''
                     UNIQUE(message, profile));
                 CREATE TABLE IF NOT EXISTS events (
                     sequence INTEGER PRIMARY KEY AUTOINCREMENT, owner TEXT NOT NULL,
-                    conversation TEXT NOT NULL, kind TEXT NOT NULL, created REAL NOT NULL);
+                    conversation TEXT NOT NULL, kind TEXT NOT NULL, created REAL NOT NULL,
+                    detail TEXT);
                 CREATE TABLE IF NOT EXISTS meta (key TEXT PRIMARY KEY, value TEXT NOT NULL);
                 CREATE TABLE IF NOT EXISTS session_messages (
                     binding_key TEXT NOT NULL REFERENCES session_bindings(binding_key),
@@ -95,6 +96,8 @@ class Store:
         self.path = self.root / 'messages.sqlite'
         with self.db() as db:
             db.executescript(_SCHEMA)
+            if 'detail' not in {r[1] for r in db.execute('PRAGMA table_info(events)')}:
+                db.execute('ALTER TABLE events ADD COLUMN detail TEXT')
         self.path.chmod(0o600)
 
     def clear_stale_stored_session_ids(self) -> int:
@@ -142,9 +145,11 @@ class Store:
             raise Problem(404, 'Conversation not found')
         return row
 
-    def _event(self, db, row, kind):
-        db.execute('INSERT INTO events(owner, conversation, kind, created) VALUES(?,?,?,?)',
-                   (row['owner'], row['id'], kind, time.time()))
+    def _event(self, db, row, kind, detail=None):
+        db.execute(
+            'INSERT INTO events(owner, conversation, kind, created, detail) VALUES(?,?,?,?,?)',
+            (row['owner'], row['id'], kind, time.time(), detail),
+        )
 
     def _summary(self, db, row):
         latest = db.execute('SELECT body FROM messages WHERE conversation=? ORDER BY sequence DESC LIMIT 1', (row['id'],)).fetchone()
@@ -339,10 +344,7 @@ class Store:
             db.execute('DELETE FROM session_bindings WHERE conversation=?', (cid,))
             db.execute('DELETE FROM events WHERE conversation=?', (cid,))
             db.execute('DELETE FROM conversations WHERE id=? AND owner=?', (cid, owner))
-            db.execute(
-                'INSERT INTO events(owner, conversation, kind, created) VALUES(?,?,?,?)',
-                (owner, cid, 'conversation.deleted', time.time()),
-            )
+            self._event(db, dict(id=cid, owner=owner), 'conversation.deleted')
             return dict(ok=True, binding_keys=binding_keys)
 
     def run_action(self, owner, run, action):
@@ -561,6 +563,20 @@ class Store:
                 (profile, dispatch_id),
             ).rowcount
             return bool(changed)
+
+    def settle_empty_to_yield(self, message_id: str, reason: str) -> bool:
+        """Terminal settle when empty-To turn-taking yields with no dispatch."""
+        with self.db() as db:
+            message = db.execute('SELECT * FROM messages WHERE id=?', (message_id,)).fetchone()
+            if message is None:
+                return False
+            row = db.execute('SELECT * FROM conversations WHERE id=?', (message['conversation'],)).fetchone()
+            if row is None:
+                return False
+            detail = json.dumps({'message': message_id, 'reason': reason})
+            self._event(db, row, 'turn.yielded', detail)
+            poke()
+            return True
 
     def yield_dispatch(self, dispatch_id: str) -> bool:
         """Complete a queued dispatch without a public reply or agent run."""

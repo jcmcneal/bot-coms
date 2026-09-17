@@ -252,6 +252,8 @@ class MessagingService:
                     reason='nothing_new',
                     shadow=False,
                 )
+                self.store.settle_empty_to_yield(message['id'], 'nothing_new')
+                handled.add(cid)
                 continue
             decision, mode = await self._decide_empty_to(message, config)
             if mode == 'shadow':
@@ -259,6 +261,7 @@ class MessagingService:
                 handled.add(cid)
                 continue
             if decision.action == 'yield':
+                self.store.settle_empty_to_yield(message['id'], decision.reason)
                 handled.add(cid)
                 continue
             if decision.action == 'select' and decision.speaker:
