@@ -29,8 +29,9 @@ DECISION_SCHEMA = {
 
 INSTRUCTIONS = (
     "Pick at most one eligible member id from the roster, or yield. "
-    "Never invent ids. Prefer yield when the human should answer or nothing "
-    "new is useful. Prefer the default responder for brief group acknowledgements."
+    "Never invent ids. On an unanswered human message, select the default "
+    "responder (or a clearly relevant member). Yield only when nothing new "
+    "is useful. Do not yield reason=human on a fresh human send."
 )
 
 
@@ -126,6 +127,16 @@ def validate_decision(
     if reason not in {"addressed", "relevant", "ack", "nothing_new", "human"}:
         reason = "relevant"
     if action == "yield":
+        # Auto / empty-To on a fresh human send must elect a speaker.
+        # Yield/human here was leaving "To: Auto" with no dispatch.
+        if unanswered_human and reason == "human":
+            return TurnDecision(
+                action="select",
+                speaker=default_responder,
+                reason="ack",
+                model=model,
+                used_model=used_model,
+            )
         return TurnDecision(
             action="yield",
             speaker=None,
