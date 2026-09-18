@@ -472,22 +472,24 @@ def test_on_mode_yield_skips_submit(root):
         backend.release()
 
 
-def test_empty_to_human_yield_emits_terminal_settle(root):
+def test_empty_to_human_yield_elects_default_responder(root):
     set_mode(root, 'on')
     selector = StubSelector({'action': 'yield', 'reason': 'human'})
     backend = service(root, selector=selector)
     try:
         group = backend.store.groups('test:alice', 'Group', ['swe-id', 'designer-id'], 'swe-id', 'g')
-        sent = backend.store.send('test:alice', 'first', 'anyone?', [], cid=group['id'])
+        backend.store.send('test:alice', 'first', 'anyone?', [], cid=group['id'])
         tick(backend)
+        with backend.store.db() as db:
+            row = db.execute('SELECT action, speaker, profile FROM turn_decisions t JOIN dispatches d ON d.message=t.message').fetchone()
+            assert row['action'] == 'select'
+            assert row['speaker'] == 'swe-id'
+            dispatch = db.execute('SELECT profile, state FROM dispatches').fetchone()
+            assert dispatch['profile'] == 'swe-id'
+            assert dispatch['state'] == 'running'
         events = backend.store.events('test:alice', 0)['events']
-        yielded = [e for e in events if e['kind'] == 'turn.yielded']
-        assert len(yielded) == 1
-        assert json.loads(yielded[0]['detail']) == {
-            'message': sent['message']['id'],
-            'reason': 'human',
-        }
-        assert not [e for e in events if e['kind'] == 'run.updated']
+        assert not [e for e in events if e['kind'] == 'turn.yielded']
+        assert backend.runtime.calls
     finally:
         backend.release()
 
