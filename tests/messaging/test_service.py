@@ -494,6 +494,32 @@ def test_empty_to_human_yield_elects_default_responder(root):
         backend.release()
 
 
+def test_dm_empty_to_skips_turn_taking_llm(root):
+    """1:1 empty To must never invoke the selector; enqueue DM responder only."""
+    set_mode(root, 'on')
+    selector = StubSelector({'action': 'select', 'speaker': 'designer-id', 'reason': 'relevant'})
+    backend = service(root, selector=selector)
+    try:
+        opened = backend.store.send('test:alice', 'open', 'hi', [], dm=('swe-id', 'SWE'))
+        cid = opened['conversation']['id']
+        sent = backend.store.send('test:alice', 'ping', 'how are you?', [], cid=cid)
+        tick(backend)
+        assert selector.calls == []
+        with backend.store.db() as db:
+            row = db.execute(
+                'SELECT profile, state FROM dispatches WHERE message=?',
+                (sent['message']['id'],),
+            ).fetchone()
+            assert row['profile'] == 'swe-id'
+            assert db.execute(
+                'SELECT count(*) FROM turn_decisions WHERE message=?',
+                (sent['message']['id'],),
+            ).fetchone()[0] == 0
+        assert backend.runtime.calls
+    finally:
+        backend.release()
+
+
 def test_explicit_to_complete_still_emits_run_updated_not_turn_yielded(root):
     set_mode(root, 'on')
     selector = StubSelector({'action': 'yield', 'reason': 'human'})

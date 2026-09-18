@@ -58,7 +58,9 @@ def classify_route(
     """Return keep | ambiguous.
 
     keep: admit the queued profile as-is (DM, explicit recipients, mention hop).
-    ambiguous: may invoke the auxiliary selector.
+    ambiguous: may invoke the auxiliary selector (group/channel empty To only).
+
+    Policy: DM always keep — the turn-taking LLM must never run in a 1:1.
     """
     if conversation_kind == "dm":
         return "keep"
