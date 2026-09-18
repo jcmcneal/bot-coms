@@ -407,3 +407,45 @@ def test_fresh_store_can_insert_turn_decisions(root):
         assert row['action'] == 'select'
         assert row['speaker'] == 'swe-id'
         assert row['reason'] == 'ack'
+
+
+def test_dm_via_conversation_empty_to_enqueues_responder(root):
+    """POST /conversations/{cid} empty To on a DM must enqueue default, no turn_decision."""
+    store = Store(root)
+    opened = store.send('test:alice', 'open', 'hi', [], dm=('swe-id', 'SWE'))
+    cid = opened['conversation']['id']
+    sent = store.send('test:alice', 'empty-to', 'anyone home?', [], cid=cid)
+    with store.db() as db:
+        assert db.execute(
+            'SELECT recipients FROM messages WHERE id=?',
+            (sent['message']['id'],),
+        ).fetchone()['recipients'] == '[]'
+        rows = db.execute(
+            'SELECT profile, state FROM dispatches WHERE message=?',
+            (sent['message']['id'],),
+        ).fetchall()
+        assert len(rows) == 1
+        assert rows[0]['profile'] == 'swe-id'
+        assert db.execute(
+            'SELECT count(*) FROM turn_decisions WHERE message=?',
+            (sent['message']['id'],),
+        ).fetchone()[0] == 0
+
+
+def test_dm_via_conversation_api_empty_to_enqueues_responder(api, root):
+    first = send(api).json()
+    cid = first['conversation']['id']
+    second = api.post(
+        f'/v1/conversations/{cid}/messages',
+        headers=headers(),
+        json=dict(client_message_id='via-cid', body='ping', recipients=[]),
+    )
+    assert second.status_code == 200
+    mid = second.json()['message']['id']
+    with Store(root).db() as db:
+        assert db.execute(
+            'SELECT profile FROM dispatches WHERE message=?', (mid,)
+        ).fetchone()['profile'] == 'swe-id'
+        assert db.execute(
+            'SELECT count(*) FROM turn_decisions WHERE message=?', (mid,)
+        ).fetchone()[0] == 0

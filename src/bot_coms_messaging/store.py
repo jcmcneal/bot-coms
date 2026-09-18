@@ -211,8 +211,9 @@ class Store:
             if revision is not None and revision != row['revision']:
                 raise Problem(409, 'Membership changed; refresh before sending')
             # Group empty To: persist only; turn-taking enqueues a speaker later.
-            # DMs and explicit recipients still queue origin dispatches here.
-            if dm or recipients:
+            # DMs (kind or /dms path) and explicit recipients queue origin dispatches
+            # here — never invoke turn-taking in a 1:1.
+            if dm or row['kind'] == 'dm' or recipients:
                 targets = sorted(set(recipients)) or [row['responder']]
             else:
                 targets = []
@@ -490,12 +491,13 @@ class Store:
     def pending_empty_to_messages(self):
         """Group user messages with empty To: and no origin dispatch yet.
 
+        DMs are excluded by kind — turn-taking must never run in a 1:1.
         Skips messages that already have a non-shadow yield decision (nothing to
         enqueue) or any dispatch row for that message.
         """
         with self.db() as db:
             rows = db.execute(
-                """SELECT m.*, c.owner, c.title, c.responder, c.profiles AS member_profiles
+                """SELECT m.*, c.owner, c.kind, c.title, c.responder, c.profiles AS member_profiles
                    FROM messages m
                    JOIN conversations c ON c.id=m.conversation
                    WHERE c.kind='group' AND m.author='user'

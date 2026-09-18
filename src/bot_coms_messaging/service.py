@@ -141,7 +141,20 @@ class MessagingService:
         return default_selector_llm()
 
     async def _decide_empty_to(self, message, config):
-        """Run or reuse turn-taking for a group empty-To user message."""
+        """Run or reuse turn-taking for a group empty-To user message.
+
+        Policy: never call the selector LLM for a DM. pending_empty_to is
+        group-only; this guard is belt-and-suspenders.
+        """
+        if message.get('kind') == 'dm':
+            decision = turn_taking.TurnDecision(
+                action='select',
+                speaker=message['responder'],
+                reason='ack',
+                model='',
+                used_model=False,
+            )
+            return decision, 'off'
         mode = config.get('turn_taking_mode', 'on')
         input_seq = message['sequence']
         default = message['responder']
@@ -230,6 +243,11 @@ class MessagingService:
             cid = message['conversation']
             if cid in handled:
                 continue
+            if message.get('kind') == 'dm':
+                # Policy lock: never turn-take in a 1:1; enqueue DM responder.
+                self.store.enqueue_origin_dispatch(message['id'], message['responder'])
+                handled.add(cid)
+                continue
             with self.store.db() as db:
                 busy = db.execute(
                     """SELECT 1 FROM dispatches WHERE conversation=? AND
@@ -290,6 +308,9 @@ class MessagingService:
             ).fetchone()
             trigger = db.execute('SELECT * FROM messages WHERE id=?', (d['message'],)).fetchone()
         if conversation is None or trigger is None:
+            return d
+        if conversation['kind'] == 'dm':
+            # Policy: turn-taking LLM never runs in a 1:1.
             return d
         recipients = json.loads(trigger['recipients'] or '[]')
         route = turn_taking.classify_route(
