@@ -324,14 +324,66 @@ def test_malformed_plugin_enablement_cancels_active_run(root, instance):
         backend.release()
 
 
+def test_profile_model_change_starts_new_session_binding(root):
+    """Changing the Hermes profile model rotates the binding key (fresh session)."""
+    from bot_coms_messaging.config import profile_model_pin
+
+    hermes_root = root.parent.parent
+    profile_dir = hermes_root / 'profiles' / 'swe'
+    profile_dir.mkdir(parents=True)
+    (profile_dir / 'config.yaml').write_text(
+        'model:\n  provider: openai-codex\n  default: gpt-5.6-terra\n'
+    )
+    runtime = Runtime()
+    backend = service(root, runtime)
+    try:
+        cid = send(backend.store)
+        tick(backend)
+        first_key = backend.runtime.calls[0]['conversation_key']
+        pin1 = profile_model_pin(hermes_root, 'swe')
+        assert pin1 == 'openai-codex:gpt-5.6-terra'
+        assert first_key == hashlib.sha256(json.dumps(
+            ['test-server', 'test:alice', cid, 'swe-id', pin1], separators=(',', ':')
+        ).encode()).hexdigest()
+
+        (profile_dir / 'config.yaml').write_text(
+            'model:\n  provider: openai-codex\n  default: gpt-5.6-luna\n'
+        )
+        pin2 = profile_model_pin(hermes_root, 'swe')
+        assert pin2 == 'openai-codex:gpt-5.6-luna'
+        expected2 = hashlib.sha256(json.dumps(
+            ['test-server', 'test:alice', cid, 'swe-id', pin2], separators=(',', ':')
+        ).encode()).hexdigest()
+        assert expected2 != first_key
+
+        backend.runtime.finish('first reply')
+        tick(backend)
+        backend.store.send('test:alice', 'second', 'again', [], cid=cid)
+        tick(backend)
+        second_key = backend.runtime.calls[-1]['conversation_key']
+        assert second_key == expected2
+        with backend.store.db() as db:
+            row = db.execute(
+                'SELECT binding_key, session_id FROM session_bindings WHERE conversation=? AND profile=?',
+                (cid, 'swe-id'),
+            ).fetchone()
+            assert row['binding_key'] == expected2
+            # New binding should not keep the prior session id.
+            assert row['session_id'] == 'session-1'
+    finally:
+        backend.release()
+
+
+
 def test_admit_adopts_plugin_session_id_when_cli_binding_is_stale(root):
     runtime = Runtime()
     backend = service(root, runtime)
     try:
         cid = send(backend.store)
         config = json.loads((root / 'config.json').read_text())
+        # model_pin is '' when the test hermes tree has no profile config.yaml
         key = hashlib.sha256(json.dumps(
-            [config['server_id'], 'test:alice', cid, 'swe-id'], separators=(',', ':')
+            [config['server_id'], 'test:alice', cid, 'swe-id', ''], separators=(',', ':')
         ).encode()).hexdigest()
         with backend.store.db() as db:
             db.execute(

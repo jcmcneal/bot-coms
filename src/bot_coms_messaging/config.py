@@ -56,6 +56,47 @@ def _profile_display_name(profile_dir: Path, name: str) -> str:
     return name
 
 
+def profile_model_pin(hermes_root: Path, profile_name: str) -> str:
+    """Return provider:default for a Hermes profile's primary model.
+
+    Used in messaging session binding keys so a profile model change starts a
+    fresh Hermes session instead of resuming the prior one.
+    """
+    if profile_name == 'default':
+        directory = hermes_root
+    else:
+        directory = hermes_root / 'profiles' / profile_name
+    path = directory / 'config.yaml'
+    try:
+        raw = path.read_text()
+    except OSError:
+        return ''
+    try:
+        data = json.loads(raw)
+    except ValueError:
+        try:
+            import yaml
+            data = yaml.safe_load(raw)
+        except Exception:
+            return ''
+    if not isinstance(data, dict):
+        return ''
+    model = data.get('model')
+    if not isinstance(model, dict):
+        return ''
+    provider = model.get('provider') if isinstance(model.get('provider'), str) else ''
+    default = model.get('default')
+    if default is None:
+        default = model.get('model')
+    if not isinstance(default, str):
+        default = ''
+    provider = provider.strip()
+    default = default.strip()
+    if not provider and not default:
+        return ''
+    return f'{provider}:{default}'
+
+
 def _is_deleted_named_profile(hermes_root: Path, name: str) -> bool:
     tombstone = hermes_root / 'profiles' / '.deleted' / name
     return tombstone.exists()
