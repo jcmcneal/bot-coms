@@ -12,7 +12,7 @@ import json
 import time
 from pathlib import Path
 
-from .config import allowed, load_config
+from .config import allowed, load_config, profile_model_pin
 from .store import Problem, Store
 from . import turn_taking
 
@@ -496,12 +496,35 @@ class MessagingService:
 
     async def admit(self, d, config):
         profile = next(p for p in config['profiles'] if p['id'] == d['profile'])
-        key = hashlib.sha256(json.dumps([config['server_id'], d['owner'], d['conversation'], d['profile']], separators=(',', ':')).encode()).hexdigest()
+        # Include the profile's current Hermes model so a model change does not
+        # resume a session that was created under a different model.
+        hermes_root = Path(self.root).parent.parent
+        model_pin = profile_model_pin(hermes_root, profile['name'])
+        key = hashlib.sha256(json.dumps(
+            [config['server_id'], d['owner'], d['conversation'], d['profile'], model_pin],
+            separators=(',', ':'),
+        ).encode()).hexdigest()
         with self.store.db() as db:
-            db.execute('INSERT OR IGNORE INTO session_bindings(binding_key,server_id,owner,conversation,profile,profile_name) VALUES(?,?,?,?,?,?)',
-                       (key, config['server_id'], d['owner'], d['conversation'], d['profile'], profile['name']))
+            existing = db.execute(
+                'SELECT * FROM session_bindings WHERE server_id=? AND owner=? AND conversation=? AND profile=?',
+                (config['server_id'], d['owner'], d['conversation'], d['profile']),
+            ).fetchone()
+            if existing is not None and existing['binding_key'] != key:
+                # Model pin changed: drop continuity so the next turn starts a
+                # fresh Hermes session under the new binding key.
+                old_key = existing['binding_key']
+                db.execute('DELETE FROM session_messages WHERE binding_key=?', (old_key,))
+                db.execute('UPDATE dispatches SET binding_key=NULL WHERE binding_key=?', (old_key,))
+                db.execute('DELETE FROM session_bindings WHERE binding_key=?', (old_key,))
+                existing = None
+            if existing is None:
+                db.execute(
+                    'INSERT INTO session_bindings(binding_key,server_id,owner,conversation,profile,profile_name) '
+                    'VALUES(?,?,?,?,?,?)',
+                    (key, config['server_id'], d['owner'], d['conversation'], d['profile'], profile['name']),
+                )
             binding = db.execute('SELECT * FROM session_bindings WHERE binding_key=?', (key,)).fetchone()
-            if binding['blocked'] or binding['profile_name'] != profile['name']:
+            if binding is None or binding['blocked'] or binding['profile_name'] != profile['name']:
                 return False
         session = await self.call('ensure_session', principal_id=d['owner'], profile=profile['name'], conversation_key=key, title=d['title'])
         with self.store.db() as db:

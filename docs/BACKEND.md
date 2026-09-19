@@ -11,7 +11,7 @@ The existing Hermes dashboard owns the plugin lifecycle; bot-coms owns messaging
 and team scheduling, CLI session execution, and restart reconciliation. No
 messaging, wake, or reconcile sidecar is installed.
 
-SQLite remains durable: messaging stores messages, dispatches, session bindings,
+Session binding keys include the Hermes profile's current `provider:model` pin so a profile model change starts a new session instead of resuming the old one. SQLite remains durable: messaging stores messages, dispatches, session bindings,
 and delivered context; the team board retains assignments, contracts, reviews,
 and its outbox. `team/team-runtime.sqlite3` journals team turn admission. Hermes
 stores exact session bindings and idempotent operation receipts in its own
